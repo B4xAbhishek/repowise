@@ -112,9 +112,12 @@ def _is_unreachable(code: str, headers: list[re.Match[str]], k: int, haystack: s
     header, previous = headers[k], headers[k - 1]
     if header.group("section") or previous.group("section"):
         return False
+    # The cheap fall-through check first: the name scan below reads the whole program.
+    if not _ends_in_transfer(code[previous.end() : header.start()]):
+        return False
     name = re.escape(header.group("name"))
     mentions = re.findall(rf"(?<![\w-]){name}(?![\w-])", haystack, re.IGNORECASE)
-    return len(mentions) == 1 and _ends_in_transfer(code[previous.end() : header.start()])
+    return len(mentions) == 1
 
 
 def _span(
