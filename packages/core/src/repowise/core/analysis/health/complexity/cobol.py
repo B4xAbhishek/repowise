@@ -104,6 +104,19 @@ def _is_exit(name: str) -> bool:
     return name == "EXIT" or name.endswith("-EXIT")
 
 
+def _performs(division: Node) -> list[Node]:
+    """Every ``perform_procedure`` (the ``X [THRU Y]`` of a PERFORM) under *division*."""
+    found: list[Node] = []
+    stack = [division]
+    while stack:
+        node = stack.pop()
+        if node.type == "perform_procedure":
+            found.append(node)
+        else:
+            stack.extend(node.named_children)
+    return found
+
+
 class _Ranges:
     """The headers of one procedure division and the PERFORM ranges over them."""
 
@@ -111,36 +124,41 @@ class _Ranges:
         # Per header: name, kind, the section it is in, and where it starts.
         self.order: list[tuple[str, str, str]] = []
         self.starts: list[int] = []
-        section = ""
-        for child in division.named_children:
-            if child.type in _HEADERS:
-                raw = (child.text or b"").decode("utf-8", "replace")
-                name = normalize_cobol_symbol_name(raw, child.type)
-                if child.type == "section_header":
-                    section = name
-                self.order.append((name, child.type, section))
-                self.starts.append(child.start_byte)
+        self._collect_headers(division)
         self.where: dict[str, list[int]] = {}
         for i, (name, _, _) in enumerate(self.order):
             self.where.setdefault(name, []).append(i)
         # Header index -> the furthest end of a range it sits in.
         self.bound: dict[int, int] = {}
-        stack = [division]
-        while stack:
-            node = stack.pop()
-            if node.type != "perform_procedure":
-                stack.extend(node.named_children)
+        for perform in _performs(division):
+            span = self._span(perform)
+            if span is not None:
+                start, end = span
+                for i in range(start, end + 1):
+                    self.bound[i] = max(self.bound.get(i, end), end)
+
+    def _collect_headers(self, division: Node) -> None:
+        section = ""
+        for child in division.named_children:
+            if child.type not in _HEADERS:
                 continue
-            labels = [_label(c) for c in node.named_children if c.type == "label"]
-            if not labels:
-                continue
-            start = self.find(*labels[0], at=bisect_right(self.starts, node.start_byte) - 1)
-            end = None if start is None else self.find(*labels[-1], at=start)
-            if start is None or end is None or end < start:
-                continue
-            end = self._last(end)
-            for i in range(start, end + 1):
-                self.bound[i] = max(self.bound.get(i, end), end)
+            raw = (child.text or b"").decode("utf-8", "replace")
+            name = normalize_cobol_symbol_name(raw, child.type)
+            if child.type == "section_header":
+                section = name
+            self.order.append((name, child.type, section))
+            self.starts.append(child.start_byte)
+
+    def _span(self, perform: Node) -> tuple[int, int] | None:
+        """First and last header a ``perform_procedure`` runs, or None if unresolved."""
+        labels = [_label(c) for c in perform.named_children if c.type == "label"]
+        if not labels:
+            return None
+        start = self.find(*labels[0], at=bisect_right(self.starts, perform.start_byte) - 1)
+        end = None if start is None else self.find(*labels[-1], at=start)
+        if start is None or end is None or end < start:
+            return None
+        return start, self._last(end)
 
     def at(self, header: Node) -> int:
         """The header's index; -1 for a program's leading statements."""

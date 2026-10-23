@@ -13,7 +13,7 @@ from repowise.core.analysis.health.scoring import biomarker_dimension, dimension
 grammar_pack = pytest.importorskip("tree_sitter_language_pack")
 try:
     grammar_pack.get_language("cobol")
-except Exception as exc:  # pragma: no cover - depends on first-use grammar cache/network
+except (grammar_pack.Error, OSError) as exc:  # pragma: no cover - first-use download
     pytest.skip(f"COBOL grammar unavailable: {exc}", allow_module_level=True)
 
 _KIND = "cobol_unstructured_flow"
