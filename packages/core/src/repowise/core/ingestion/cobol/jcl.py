@@ -2,8 +2,10 @@
 
 Read line by line: ``//*`` comments are skipped and a statement continued on
 the next ``//`` line is joined to it. A step runs ``PGM=X`` or a procedure
-(``EXEC X`` / ``EXEC PROC=X``). In-stream data (``DD *``) is kept apart, for
-the CSD definitions a DFHCSDUP step reads there.
+(``EXEC X`` / ``EXEC PROC=X``). In-stream data (``DD *`` / ``DD DATA``, up to
+``/*``, the next ``//`` statement, or its ``DLM=`` delimiter) is kept apart, for
+the CSD definitions a DFHCSDUP step reads there. Ceiling: data under ``DLM=``
+still passes the statement joiner, so a ``//*`` data line is dropped.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ _STATEMENT = re.compile(rf"^//(?P<name>{_NAME})?\s+(?P<op>\S+)\s*(?P<operands>.*
 _PGM = re.compile(rf"^PGM=(?P<name>{_NAME})\b", re.I)
 _PROC = re.compile(rf"^(?:PROC=)?(?P<name>{_NAME})\s*(?:,|$)", re.I)
 _IN_STREAM = re.compile(r"\bDD\s+(\*|DATA)", re.I)
+_DELIMITER = re.compile(r"\bDLM=(?:'(?P<quoted>[^']{2})'|(?P<plain>[^\s,']{2}))", re.I)
 
 
 @dataclass
@@ -42,12 +45,17 @@ class JclMember:
 def read_jcl(text: str) -> JclMember:
     member = JclMember()
     lines = text.splitlines()
-    in_stream = False
+    # While in-stream: the prefix that ends the data ("/" for ``/*`` and ``//``).
+    end_of_data: str | None = None
     for number, statement in _statements(lines):
-        if in_stream and not statement.startswith("/"):
-            member.in_stream.append((number, statement))
-            continue
-        in_stream = False
+        if end_of_data is not None:
+            if not statement.startswith(end_of_data):
+                member.in_stream.append((number, statement))
+                continue
+            if end_of_data != "/":
+                end_of_data = None
+                continue
+        end_of_data = None
         m = _STATEMENT.match(statement)
         if m is None:
             continue
@@ -70,7 +78,8 @@ def read_jcl(text: str) -> JclMember:
             step.procedure = proc.group("name").upper() if proc else None
             member.steps.append(step)
         elif op == "DD" and _IN_STREAM.search(f"DD {operands}"):
-            in_stream = True
+            delimiter = _DELIMITER.search(operands)
+            end_of_data = (delimiter.group("quoted") or delimiter.group("plain")) if delimiter else "/"
     return member
 
 

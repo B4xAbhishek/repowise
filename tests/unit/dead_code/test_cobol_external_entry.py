@@ -150,3 +150,62 @@ def test_cobol_paragraph_findings_are_low_and_never_deletion_ready() -> None:
     assert finding.confidence < 0.4
     assert finding.safe_to_delete is False
     assert (finding.start_line, finding.end_line) == (11, 12)
+
+
+def test_rewritten_or_unread_copybooks_keep_every_paragraph() -> None:
+    body = (
+        "           GOBACK.\n       ACCT-INIT.\n           EXIT.\n"
+        "       COPY PROCS REPLACING ==:P:== BY ==ACCT==.\n"
+    )
+    assert _unreachable(body, {"PROCS": "       P2.\n           PERFORM :P:-INIT.\n"}) == []
+    replace = "           GOBACK.\n       ACCT-INIT.\n           EXIT.\n       REPLACE ==A== BY ==B==.\n"
+    assert _unreachable(replace) == []
+    nested = "           GOBACK.\n       NEXT-PARA.\n           EXIT.\n       COPY OUTER.\n"
+    outer = "       P2.\n           EXIT.\n       COPY INNER.\n"
+    # A copybook copied by a procedure copybook is searched too, and must resolve.
+    assert _unreachable(nested, {"OUTER": outer}) == []
+    assert _unreachable(nested, {"OUTER": outer, "INNER": "           PERFORM NEXT-PARA.\n"}) == []
+    assert _unreachable(nested, {"OUTER": outer, "INNER": "           EXIT.\n"}) == ["NEXT-PARA"]
+
+
+def test_control_paths_the_text_names_or_runs_into_are_kept() -> None:
+    cases = {
+        # PERFORM A THRU C runs B by falling out of A.
+        "thru_interior": "           PERFORM A-PARA THRU C-PARA\n           GOBACK.\n"
+        "       A-PARA.\n           MOVE 1 TO X.\n       B-PARA.\n           EXIT.\n"
+        "       C-PARA.\n           EXIT.\n",
+        # PERFORM of a section runs its paragraphs in order.
+        "section": "           PERFORM S1\n           GOBACK.\n       S1 SECTION.\n"
+        "       P1.\n           MOVE 1 TO X.\n       P2.\n           EXIT.\n",
+        "lowercase_mention": "           perform next-para\n           GOBACK.\n"
+        "       NEXT-PARA.\n           EXIT.\n",
+        "handle_abend": "           EXEC CICS HANDLE ABEND LABEL(NEXT-PARA) END-EXEC\n"
+        "           GOBACK.\n       NEXT-PARA.\n           EXIT.\n",
+        "handle_condition": "           EXEC CICS HANDLE CONDITION ERROR(NEXT-PARA) END-EXEC\n"
+        "           GOBACK.\n       NEXT-PARA.\n           EXIT.\n",
+        # Out of range, GO TO DEPENDING ON falls through to the next statement.
+        "depending_on": "           GO TO A-PARA DEPENDING ON IX.\n"
+        "       NEXT-PARA.\n           EXIT.\n       A-PARA.\n           EXIT.\n",
+        "nohandle": "           EXEC CICS RETURN NOHANDLE END-EXEC.\n"
+        "       NEXT-PARA.\n           EXIT.\n",
+        "resp": "           EXEC CICS XCTL PROGRAM('X') RESP(R) END-EXEC.\n"
+        "       NEXT-PARA.\n           EXIT.\n",
+        # A scope terminator in area A is no paragraph header.
+        "end_verb": "           GOBACK.\n       END-PERFORM.\n",
+    }
+    for case, body in cases.items():
+        assert "NEXT-PARA" not in _unreachable(body) and "B-PARA" not in _unreachable(body), case
+        assert "P2" not in _unreachable(body) and "END-PERFORM" not in _unreachable(body), case
+
+
+def test_lowercase_source_is_read_case_blind() -> None:
+    body = "           goback.\n       next-para.\n           exit.\n"
+    assert _unreachable(body) == ["NEXT-PARA"]
+
+
+def test_end_program_is_a_paragraph_name_not_a_scope_terminator() -> None:
+    body = (
+        "           GO TO END-PROGRAM.\n       END-PROGRAM.\n"
+        "           EXEC CICS RETURN END-EXEC.\n       MAINLINE-EXIT.\n           EXIT.\n"
+    )
+    assert _unreachable(body) == ["MAINLINE-EXIT"]

@@ -12,8 +12,10 @@ a paragraph is reported when all of these hold:
 * the paragraph before it ends in a sentence whose last statement is an
   unconditional ``GOBACK``, ``STOP RUN``, ``GO TO`` or ``EXEC CICS RETURN`` /
   ``XCTL`` (without ``RESP`` or ``NOHANDLE``), so nothing falls through into it;
-* the file holds one program, with no ``DECLARATIVES``, ``ENTRY`` or
-  ``IGNORE CONDITION``, and every procedure-division ``COPY`` resolved.
+* the file holds one program, with no ``DECLARATIVES``, ``ENTRY``,
+  ``IGNORE CONDITION`` or ``REPLACE``, and every procedure-division ``COPY``
+  (and every ``COPY`` inside those, transitively) resolved and free of
+  ``REPLACING``.
 
 Any doubt drops the paragraph (recall is the price). A finding is low
 confidence and never deletion-ready.
@@ -25,13 +27,15 @@ import re
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
-from repowise.core.ingestion.cobol import code_view, copy_statements
+from repowise.core.ingestion.cobol import CopyStatement, code_view, copy_statements
 
 from .constants import _is_fixture_path
 from .models import DeadCodeFindingData, DeadCodeKind
 from .risk_factors import path_risk_factors
 
 if TYPE_CHECKING:
+    import networkx as nx
+
     from .analyzer import DeadCodeAnalyzer
 
 #: Low tier: below the stored floor, so only a live run with a lower
@@ -43,9 +47,23 @@ _HEADER = re.compile(
     r"^ {7,10}(?P<name>[A-Z0-9][A-Z0-9-]*)(?P<section>\s+SECTION)?\s*\.[ \t\r]*$",
     re.IGNORECASE | re.MULTILINE,
 )
-_NOT_A_NAME = frozenset({"EXIT", "GOBACK", "CONTINUE", "END-IF", "END-EVALUATE", "END-EXEC"})
+# A verb or scope terminator alone in area A is no paragraph. Only the reserved
+# terminators: ``END-PROGRAM.`` is a legal (and common) paragraph name.
+_NOT_A_NAME = frozenset(
+    {"EXIT", "GOBACK", "CONTINUE"}
+    | {
+        f"END-{verb}"
+        for verb in (
+            "ACCEPT", "ADD", "CALL", "COMPUTE", "DELETE", "DISPLAY", "DIVIDE", "EVALUATE",
+            "EXEC", "IF", "INVOKE", "JSON", "MULTIPLY", "PERFORM", "READ", "RECEIVE", "RETURN",
+            "REWRITE", "SEARCH", "START", "STRING", "SUBTRACT", "UNSTRING", "WRITE", "XML",
+        )
+    }
+)
+# ``REPLACE`` rewrites text, so a paragraph can be named by a word no line spells.
 _UNSAFE_PROGRAM = re.compile(
-    r"\bDECLARATIVES\b|(?<![\w-])ENTRY\s+['\"]|\bIGNORE\s+CONDITION\b", re.IGNORECASE
+    r"\bDECLARATIVES\b|(?<![\w-])ENTRY\s+['\"]|\bIGNORE\s+CONDITION\b|(?<![\w-])REPLACE(?![\w-])",
+    re.IGNORECASE,
 )
 _LITERAL = re.compile(r"'[^'\n]*'|\"[^\"\n]*\"")
 _EXEC = re.compile(r"\bEXEC\s+(?:CICS|SQL|SQLIMS|DLI)\b.*?\bEND-EXEC\b", re.IGNORECASE | re.DOTALL)
@@ -71,10 +89,10 @@ def unreachable_paragraphs(code: str, copied: dict[str, str]) -> list[tuple[str,
     start = divisions[0].end()
     line_of_start = code.count("\n", 0, start) + 1
     copies = [c for c in copy_statements(code) if c.line >= line_of_start]
-    if any(c.member not in copied for c in copies):
+    if not _closed(copies, copied):
         return []
     lines = code.split("\n")
-    headers = [h for h in _HEADER.finditer(code, start) if h.group("name").upper() not in _NOT_A_NAME]
+    headers = [h for h in _HEADER.finditer(code, start) if _is_name(h.group("name"))]
     haystack = "\n".join([code, *copied.values()])
     out: list[tuple[str, int, int]] = []
     for k, header in enumerate(headers):
@@ -93,6 +111,33 @@ def unreachable_paragraphs(code: str, copied: dict[str, str]) -> list[tuple[str,
             last -= 1
         out.append((name.upper(), first, last))
     return out
+
+
+def _is_name(word: str) -> bool:
+    """A header word that can name a paragraph: no scope terminator or bare verb."""
+    return word.upper() not in _NOT_A_NAME
+
+
+def _closed(copies: list[CopyStatement], copied: dict[str, str]) -> bool:
+    """Whether the code *copies* bring in is all read, transitively, and copied verbatim.
+
+    Every member, and every member those copy in turn, must have resolved, and
+    none may use ``REPLACING`` or ``REPLACE``: a rewritten copybook can name a
+    paragraph its text never spells.
+    """
+    pending, seen = list(copies), set()
+    while pending:
+        statement = pending.pop()
+        if statement.replacing or statement.member not in copied:
+            return False
+        if statement.member in seen:
+            continue
+        seen.add(statement.member)
+        member = copied[statement.member]
+        if _UNSAFE_PROGRAM.search(member):
+            return False
+        pending.extend(copy_statements(member))
+    return True
 
 
 def _ends_in_transfer(body: str) -> bool:
@@ -115,6 +160,20 @@ def _ends_in_transfer(body: str) -> bool:
     )
 
 
+def _copied_closure(graph: nx.DiGraph, path: str) -> set[str]:
+    """Every file *path* imports, directly or through the copybooks it copies."""
+    found: set[str] = set()
+    pending = [path]
+    while pending:
+        node = pending.pop()
+        for dst in graph.successors(node):
+            edge = graph.edges[node, dst]
+            if edge.get("edge_type") == "imports" and dst not in found and dst != path:
+                found.add(dst)
+                pending.append(dst)
+    return found
+
+
 def unreachable_paragraph_findings(
     ctx: DeadCodeAnalyzer, whitelist: set[str]
 ) -> list[DeadCodeFindingData]:
@@ -129,9 +188,9 @@ def unreachable_paragraph_findings(
         if ctx._should_never_flag(path, whitelist):
             continue
         copied = {
-            PurePosixPath(dst).stem.upper(): code_view(sources[dst])
-            for dst in graph.successors(path)
-            if dst in sources and graph.edges[path, dst].get("edge_type") == "imports"
+            PurePosixPath(member).stem.upper(): code_view(sources[member])
+            for member in _copied_closure(graph, path)
+            if member in sources
         }
         for name, start, end in unreachable_paragraphs(code_view(sources[path]), copied):
             findings.append(

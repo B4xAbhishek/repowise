@@ -236,3 +236,64 @@ def test_a_transid_is_not_linked_to_its_own_program_or_an_ambiguous_one() -> Non
     )
     assert set(graph.successors("cbl/COMENU1C.cbl")) == set()
     assert set(graph.successors("cbl/CALLER.cbl")) == set()
+
+
+def test_csd_abbreviations_and_unknown_commands_end_a_definition() -> None:
+    text = (
+        "DEFINE TRANSACTION(T2) GROUP(G)\n"
+        "DEF TRANS(T3) GROUP(G)\n"
+        "    PROG(P3)\n"
+        "FOO BAR(X)\n"
+        "    PROGRAM(P9)\n"
+        "DEFINE PROGRAM(P4) GROUP(G)\n"
+        "ALT TRANSACTION(T3) PROGRAM(OTHER)\n"
+        "DELETE PROGRAM(P4) GROUP(G)\n"
+    )
+    defs = read_csd(enumerate(text.splitlines(), 1))
+    assert [(d.command, d.resource, d.name, d.program) for d in defs] == [
+        ("DEFINE", "TRANSACTION", "T2", None),
+        ("DEFINE", "TRANSACTION", "T3", "P3"),
+        ("DEFINE", "PROGRAM", "P4", None),
+        ("ALTER", "TRANSACTION", "T3", "OTHER"),
+    ]
+
+
+def test_an_altered_transaction_and_a_runtime_transid_link_nowhere() -> None:
+    altered = CSD + b" ALTER TRANSACTION(CAUP) GROUP(CARDDEMO) PROGRAM(COOTHER)\n"
+    dynamic = _program(
+        b"CALLER",
+        b"           MOVE WS-INPUT TO WS-TRANID\n"
+        b"           EXEC CICS RETURN TRANSID(WS-TRANID) END-EXEC.\n",
+    )
+    literal = _program(b"CALLER2", b"           EXEC CICS RETURN TRANSID('CAUP') END-EXEC.\n")
+    graph = _edges(
+        {
+            "csd/CARDDEMO.CSD": ("csd", CSD),
+            "cbl/CALLER.cbl": ("cobol", dynamic),
+            "cbl/COMENU1C.cbl": ("cobol", _program(b"COMENU1C")),
+        }
+    )
+    assert set(graph.successors("cbl/CALLER.cbl")) == set()
+    graph = _edges(
+        {
+            "csd/CARDDEMO.CSD": ("csd", altered),
+            "cbl/CALLER2.cbl": ("cobol", literal),
+            "cbl/COMENU1C.cbl": ("cobol", _program(b"COMENU1C")),
+            "cbl/COOTHER.cbl": ("cobol", _program(b"COOTHER")),
+        }
+    )
+    assert set(graph.successors("cbl/CALLER2.cbl")) == set()
+    assert graph.nodes["cbl/COOTHER.cbl"].get("is_reachability_root") is True
+
+
+def test_in_stream_data_ends_at_its_dlm_delimiter() -> None:
+    member = read_jcl(
+        "//J JOB CLASS=A\n//S1 EXEC PGM=DFHCSDUP\n//SYSIN DD DATA,DLM=@@\n"
+        "//NOTJCL looks like a statement\nDEFINE PROGRAM(P1) GROUP(G)\n@@\n"
+        "//S2 EXEC PGM=IEFBR14\n"
+    )
+    assert [line for _, line in member.in_stream] == [
+        "//NOTJCL looks like a statement",
+        "DEFINE PROGRAM(P1) GROUP(G)",
+    ]
+    assert [s.program for s in member.steps] == ["DFHCSDUP", "IEFBR14"]

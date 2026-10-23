@@ -127,7 +127,8 @@ def _add_mainframe_edges(
                     if target:
                         count += _file_edge(graph, path, target, set())
             for use in transid_uses(code):
-                for transid in use.targets:
+                # A TRANSID also set at runtime may name any transaction: no edge.
+                for transid in () if use.dynamic else use.targets:
                     runs = transactions.get(transid, set())
                     if len(runs) == 1:
                         target = nearest(programs.get(next(iter(runs)), []), path)
