@@ -95,6 +95,11 @@ copybooks have no functions to flag.
 A level-88 condition name is a child of the data item it tests, with an id such
 as `PROG.cbl::WS-RETURN-FLAG::APPL-AOK`, and stays findable by symbol search.
 These children do not count toward the 500-symbol warning for generated files.
+The advisory `cobol_unstructured_flow` marker lists each paragraph with an `ALTER`,
+a `GO TO ... DEPENDING ON`, or a `GO TO` that does not jump forward to an `...EXIT`
+paragraph of its own `PERFORM THRU` range; it never deducts from a score.
+A paragraph whose performer is in another file (a copybook's) is judged by the
+target's name alone.
 Apex dead-code findings are review-only, since the platform also reaches classes
 by name.
 

@@ -20,6 +20,20 @@ cognitive. A handler's statements stay at its statement's depth (the ceiling
 of not scoping them to their ``END-READ``). NLOC counts the non-blank lines of
 the code view (comments and sequence areas blank) from the first statement to
 the last, so a masked ``EXEC`` block counts every line it spans.
+
+The same pass records each jump that leaves structured flow as a
+``cobol_unstructured_flow`` hit on ``FileComplexity.perf_hits``: every
+``ALTER``, every ``GO TO ... DEPENDING ON``, a ``GO TO`` with no target (the
+one an ``ALTER`` rewrites), and any other ``GO TO`` unless it jumps forward to
+an exit of its own range. A range is a ``PERFORM X THRU Y`` in the same
+procedure division (or a performed section, which ends at its last
+paragraph); a procedure between ``X`` and ``Y`` stays silent on a ``GO TO``
+to a later header named ``...EXIT`` up to ``Y``, and a procedure in no range
+seen in the file stays silent on a ``GO TO`` to any later ``...EXIT`` header.
+Ceiling: the second case trusts the name, since its performer (the program
+that copies a copybook, or nothing at all) is out of sight; nested ranges are
+not told apart, so a jump to an enclosing range's exit stays silent; a
+paragraph name repeated across sections resolves to its first header.
 """
 
 from __future__ import annotations
@@ -32,10 +46,12 @@ from repowise.core.ingestion.cobol import code_view
 from repowise.core.ingestion.extractors.cobol import normalize_cobol_symbol_name
 
 from .dispatch import _MIN_ARMS, dispatch_share
-from .models import FileComplexity, FunctionComplexity
+from .models import FileComplexity, FunctionComplexity, PerfHit
 
 if TYPE_CHECKING:
     from tree_sitter import Node
+
+UNSTRUCTURED_FLOW = "cobol_unstructured_flow"
 
 _HEADERS = frozenset({"paragraph_header", "section_header"})
 # Children of the procedure division that are not statements of a body.
@@ -59,12 +75,94 @@ def walk_cobol(root: Node, source: bytes) -> FileComplexity:
     """Rows for every procedure in every program of the parsed file."""
     lines = code_view(source).split("\n")
     functions: list[FunctionComplexity] = []
+    hits: list[PerfHit] = []
     for division in _procedure_divisions(root):
+        ranges = _Ranges(division)
         for name, header, body in _procedures(division):
             functions.append(_measure(name, header, body, lines))
+            hits.extend(_jumps(name, header, body, ranges))
     return FileComplexity(
-        functions=functions, classes=[], file_nloc=sum(1 for line in lines if line.strip())
+        functions=functions,
+        classes=[],
+        file_nloc=sum(1 for line in lines if line.strip()),
+        perf_hits=hits,
     )
+
+
+def _label(node: Node) -> str:
+    return normalize_cobol_symbol_name((node.text or b"").decode("utf-8", "replace"), "label")
+
+
+class _Ranges:
+    """The headers of one procedure division and the PERFORM ranges over them."""
+
+    def __init__(self, division: Node) -> None:
+        self.order: list[tuple[str, str]] = []
+        for child in division.named_children:
+            if child.type in _HEADERS:
+                raw = (child.text or b"").decode("utf-8", "replace")
+                self.order.append((normalize_cobol_symbol_name(raw, child.type), child.type))
+        self.index: dict[str, int] = {}
+        for i, (name, _) in enumerate(self.order):
+            self.index.setdefault(name, i)
+        # Header index -> the furthest end of a range it sits in.
+        self.bound: dict[int, int] = {}
+        stack = [division]
+        while stack:
+            node = stack.pop()
+            if node.type != "perform_procedure":
+                stack.extend(node.named_children)
+                continue
+            labels = [_label(c) for c in node.named_children if c.type == "label"]
+            if labels and labels[0] in self.index and labels[-1] in self.index:
+                start, end = self.index[labels[0]], self._last(self.index[labels[-1]])
+                for i in range(start, end):
+                    self.bound[i] = max(self.bound.get(i, end), end)
+
+    def _last(self, i: int) -> int:
+        """A section runs to the header before the next section."""
+        if self.order[i][1] != "section_header":
+            return i
+        j = i + 1
+        while j < len(self.order) and self.order[j][1] != "section_header":
+            j += 1
+        return j - 1
+
+    def exits_to(self, name: str, target: str) -> bool:
+        """Whether ``GO TO target`` from *name* jumps forward to an exit of its range."""
+        at, to = self.index.get(name, -1), self.index.get(target)
+        return (
+            to is not None
+            and target.endswith("EXIT")
+            and at < to <= self.bound.get(at, len(self.order) - 1)
+        )
+
+
+def _jumps(name: str, header: Node, body: list[Node], ranges: _Ranges) -> list[PerfHit]:
+    """The procedure's jumps that leave structured flow (see the module doc)."""
+    hits: list[PerfHit] = []
+    for node in body:
+        if node.type not in _JUMPS:
+            continue
+        text = " ".join((node.text or b"").decode("utf-8", "replace").split())
+        if node.type == "goto_statement":
+            labels = [_label(c) for c in node.named_children if c.type == "label"]
+            if (
+                len(labels) == 1
+                and "DEPENDING" not in text.upper()
+                and ranges.exits_to(name, labels[0])
+            ):
+                continue
+        hits.append(
+            PerfHit(
+                kind=UNSTRUCTURED_FLOW,
+                line=node.start_point[0] + 1,
+                function=name,
+                detail=text,
+                func_start=header.start_point[0] + 1,
+            )
+        )
+    return hits
 
 
 def _procedure_divisions(root: Node) -> list[Node]:
