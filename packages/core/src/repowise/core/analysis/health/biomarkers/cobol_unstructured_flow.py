@@ -20,8 +20,8 @@ def _reason(name: str, first: str, count: int) -> str:
         what = f"{first} rewrites a GO TO target at runtime, so where {name} sends control"
         what += " depends on which paragraph ran before it"
     elif "DEPENDING" in upper:
-        what = f"{first} picks {name}'s next paragraph by value; every target is an exit"
-        what += " a reader must trace by hand"
+        what = f"{first} picks {name}'s next paragraph by value; a reader must trace"
+        what += " each target by hand"
     elif upper == "GO TO":
         what = f"GO TO with no target in {name} goes wherever an ALTER last pointed it"
     else:

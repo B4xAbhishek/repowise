@@ -25,20 +25,23 @@ The same pass records each jump that leaves structured flow as a
 ``cobol_unstructured_flow`` hit on ``FileComplexity.perf_hits``: every
 ``ALTER``, every ``GO TO ... DEPENDING ON``, a ``GO TO`` with no target (the
 one an ``ALTER`` rewrites), and any other ``GO TO`` unless it jumps forward to
-an exit of its own range. A range is a ``PERFORM X THRU Y`` in the same
-procedure division (or a performed section, which ends at its last
-paragraph); a procedure between ``X`` and ``Y`` stays silent on a ``GO TO``
-to a later header named ``...EXIT`` up to ``Y``, and a procedure in no range
-seen in the file stays silent on a ``GO TO`` to any later ``...EXIT`` header.
+an exit of its own range. An exit is a header named ``EXIT`` or ``...-EXIT``.
+A range is a ``PERFORM X THRU Y`` in the same procedure division (or a
+performed section, which ends at its last paragraph); a procedure from ``X``
+through ``Y`` stays silent on a ``GO TO`` to a later exit up to ``Y``, and a
+procedure in no range seen in the file stays silent on a ``GO TO`` to any
+later exit. A name qualified ``OF``/``IN`` a section resolves in that section;
+an unqualified name used in several sections resolves to the one in the
+referring procedure's section, else the first after it, else the first.
 Ceiling: the second case trusts the name, since its performer (the program
 that copies a copybook, or nothing at all) is out of sight; nested ranges are
-not told apart, so a jump to an enclosing range's exit stays silent; a
-paragraph name repeated across sections resolves to its first header.
+not told apart, so a jump to an enclosing range's exit stays silent.
 """
 
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -89,22 +92,37 @@ def walk_cobol(root: Node, source: bytes) -> FileComplexity:
     )
 
 
-def _label(node: Node) -> str:
-    return normalize_cobol_symbol_name((node.text or b"").decode("utf-8", "replace"), "label")
+def _label(node: Node) -> tuple[str, str]:
+    """``(name, section)`` of a procedure label; ``section`` is "" unless qualified."""
+    word = next((c for c in node.named_children if c.type == "qualified_word"), node)
+    parts = [(c.text or b"").decode("utf-8", "replace").upper() for c in word.named_children]
+    parts = parts or (node.text or b"").decode("utf-8", "replace").upper().split()[:1]
+    return (parts[0], parts[-1] if len(parts) > 1 else "") if parts else ("", "")
+
+
+def _is_exit(name: str) -> bool:
+    return name == "EXIT" or name.endswith("-EXIT")
 
 
 class _Ranges:
     """The headers of one procedure division and the PERFORM ranges over them."""
 
     def __init__(self, division: Node) -> None:
-        self.order: list[tuple[str, str]] = []
+        # Per header: name, kind, the section it is in, and where it starts.
+        self.order: list[tuple[str, str, str]] = []
+        self.starts: list[int] = []
+        section = ""
         for child in division.named_children:
             if child.type in _HEADERS:
                 raw = (child.text or b"").decode("utf-8", "replace")
-                self.order.append((normalize_cobol_symbol_name(raw, child.type), child.type))
-        self.index: dict[str, int] = {}
-        for i, (name, _) in enumerate(self.order):
-            self.index.setdefault(name, i)
+                name = normalize_cobol_symbol_name(raw, child.type)
+                if child.type == "section_header":
+                    section = name
+                self.order.append((name, child.type, section))
+                self.starts.append(child.start_byte)
+        self.where: dict[str, list[int]] = {}
+        for i, (name, _, _) in enumerate(self.order):
+            self.where.setdefault(name, []).append(i)
         # Header index -> the furthest end of a range it sits in.
         self.bound: dict[int, int] = {}
         stack = [division]
@@ -114,10 +132,32 @@ class _Ranges:
                 stack.extend(node.named_children)
                 continue
             labels = [_label(c) for c in node.named_children if c.type == "label"]
-            if labels and labels[0] in self.index and labels[-1] in self.index:
-                start, end = self.index[labels[0]], self._last(self.index[labels[-1]])
-                for i in range(start, end):
-                    self.bound[i] = max(self.bound.get(i, end), end)
+            if not labels:
+                continue
+            start = self.find(*labels[0], at=bisect_right(self.starts, node.start_byte) - 1)
+            end = None if start is None else self.find(*labels[-1], at=start)
+            if start is None or end is None or end < start:
+                continue
+            end = self._last(end)
+            for i in range(start, end + 1):
+                self.bound[i] = max(self.bound.get(i, end), end)
+
+    def at(self, header: Node) -> int:
+        """The header's index; -1 for a program's leading statements."""
+        i = bisect_right(self.starts, header.start_byte) - 1
+        return i if i >= 0 and self.starts[i] == header.start_byte else -1
+
+    def find(self, name: str, section: str, at: int) -> int | None:
+        """The header *name* (qualified by *section*) means when used from header *at*."""
+        found = self.where.get(name, [])
+        if section:
+            found = [i for i in found if self.order[i][2] == section]
+        if len(found) < 2:
+            return found[0] if found else None
+        here = self.order[at][2] if at >= 0 else ""
+        same = [i for i in found if self.order[i][2] == here]
+        later = [i for i in found if i > at]
+        return (same or later or found)[0]
 
     def _last(self, i: int) -> int:
         """A section runs to the header before the next section."""
@@ -128,12 +168,13 @@ class _Ranges:
             j += 1
         return j - 1
 
-    def exits_to(self, name: str, target: str) -> bool:
-        """Whether ``GO TO target`` from *name* jumps forward to an exit of its range."""
-        at, to = self.index.get(name, -1), self.index.get(target)
+    def exits_to(self, header: Node, target: tuple[str, str]) -> bool:
+        """Whether ``GO TO target`` from *header* jumps forward to an exit of its range."""
+        at = self.at(header)
+        to = self.find(*target, at=at)
         return (
             to is not None
-            and target.endswith("EXIT")
+            and _is_exit(target[0])
             and at < to <= self.bound.get(at, len(self.order) - 1)
         )
 
@@ -150,7 +191,7 @@ def _jumps(name: str, header: Node, body: list[Node], ranges: _Ranges) -> list[P
             if (
                 len(labels) == 1
                 and "DEPENDING" not in text.upper()
-                and ranges.exits_to(name, labels[0])
+                and ranges.exits_to(header, labels[0])
             ):
                 continue
         hits.append(

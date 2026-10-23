@@ -140,6 +140,119 @@ def test_unperformed_paragraph_trusts_the_exit_name() -> None:
     ) == []
 
 
+def test_qualified_go_to_and_thru_resolve_in_their_section() -> None:
+    assert _hits(
+        _program(
+            "           PERFORM A OF S1 THRU A-EXIT IN S1.",
+            "           GOBACK.",
+            "       S1 SECTION.",
+            "       A.",
+            "           GO TO A-EXIT OF S1.",
+            "       A-EXIT.",
+            "           EXIT.",
+        )
+    ) == []
+
+
+def test_thru_spanning_sections() -> None:
+    assert _hits(
+        _program(
+            "           PERFORM S1 THRU S2.",
+            "           GOBACK.",
+            "       S1 SECTION.",
+            "       A.",
+            "           GO TO S2-EXIT.",
+            "       S2 SECTION.",
+            "       B.",
+            "           MOVE 1 TO WS-A.",
+            "       S2-EXIT.",
+            "           EXIT.",
+        )
+    ) == []
+
+
+def test_thru_on_a_continuation_line_and_lowercase_names() -> None:
+    assert _hits(
+        _program(
+            "           perform a",
+            "              thru a-exit.",
+            "           goback.",
+            "       a.",
+            "           go to a-exit.",
+            "       a-exit.",
+            "           exit.",
+        )
+    ) == []
+
+
+def test_duplicate_names_resolve_in_the_current_section() -> None:
+    # Each section has its own P-EXIT; Q's jump means S2's, which a
+    # first-header lookup would place behind it.
+    assert _hits(
+        _program(
+            "           PERFORM P THRU P-EXIT OF S1.",
+            "           PERFORM Q THRU P-EXIT OF S2.",
+            "           GOBACK.",
+            "       S1 SECTION.",
+            "       P.",
+            "           GO TO P-EXIT.",
+            "       P-EXIT.",
+            "           EXIT.",
+            "       S2 SECTION.",
+            "       Q.",
+            "           GO TO P-EXIT.",
+            "       P-EXIT.",
+            "           EXIT.",
+        )
+    ) == []
+
+
+def test_go_to_from_the_range_end_to_a_later_exit_fires() -> None:
+    assert _hits(
+        _program(
+            "           PERFORM A THRU A-EXIT.",
+            "           GOBACK.",
+            "       A.",
+            "           MOVE 1 TO WS-A.",
+            "       A-EXIT.",
+            "           GO TO Z-EXIT.",
+            "       Z-EXIT.",
+            "           EXIT.",
+        )
+    ) == [("A-EXIT", "GO TO Z-EXIT")]
+
+
+def test_depending_on_reason_makes_no_claim_about_targets() -> None:
+    (finding,) = _findings(
+        _program(
+            "       A.",
+            "           GO TO B C DEPENDING ON WS-A.",
+            "       B.",
+            "           EXIT.",
+            "       C.",
+            "           EXIT.",
+        )
+    )
+    assert finding.reason == (
+        "GO TO B C DEPENDING ON WS-A picks A's next paragraph by value; "
+        "a reader must trace each target by hand"
+    )
+
+
+@pytest.mark.parametrize("target", ["CHECKEXIT", "NOEXIT"])
+def test_exit_needs_a_hyphen_suffix(target: str) -> None:
+    assert _hits(
+        _program(
+            "           PERFORM A THRU " + target + ".",
+            "           GOBACK.",
+            "       A.",
+            "           GO TO " + target + ".",
+            "       " + target + ".",
+            "           EXIT.",
+        )
+    ) == [("A", "GO TO " + target)]
+
+
 def test_one_finding_per_procedure_and_advisory() -> None:
     results = _findings(
         _program(
