@@ -214,13 +214,15 @@ def _judged_programs(ctx: DeadCodeAnalyzer, whitelist: set[str]) -> list[str]:
     return [
         path
         for path, data in ctx.graph.nodes(data=True)
-        if data.get("node_type") == "file"
-        and data.get("language") == "cobol"
-        and path in ctx._source_map
-        and not data.get("is_test")
-        and not _is_fixture_path(path)
+        if _is_cobol_source(ctx, path, data)
+        and not (data.get("is_test") or _is_fixture_path(path))
         and not ctx._should_never_flag(path, whitelist)
     ]
+
+
+def _is_cobol_source(ctx: DeadCodeAnalyzer, path: str, data: dict) -> bool:
+    is_cobol_file = data.get("node_type") == "file" and data.get("language") == "cobol"
+    return is_cobol_file and path in ctx._source_map
 
 
 def _finding(
