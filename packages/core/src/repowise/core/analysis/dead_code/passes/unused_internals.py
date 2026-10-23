@@ -1,4 +1,8 @@
-"""The unused-internal pass: private symbols no call, reference or override reaches."""
+"""The unused-internal pass: private symbols no call, reference or override reaches.
+
+COBOL paragraphs are judged from the program's source text instead, by
+``cobol_paragraphs.py``.
+"""
 
 from __future__ import annotations
 

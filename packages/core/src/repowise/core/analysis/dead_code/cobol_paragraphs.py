@@ -83,34 +83,52 @@ def unreachable_paragraphs(code: str, copied: dict[str, str]) -> list[tuple[str,
     *code* is a program's code view; *copied* maps each member it copies that
     resolved to that member's code view.
     """
+    procedure = _procedure(code, copied)
+    if procedure is None:
+        return []
+    start, copies = procedure
+    headers = [h for h in _HEADER.finditer(code, start) if _is_name(h.group("name"))]
+    haystack = "\n".join([code, *copied.values()])
+    return [
+        (headers[k].group("name").upper(), *_span(code, headers, k, copies))
+        for k in range(1, len(headers))
+        if _is_unreachable(code, headers, k, haystack)
+    ]
+
+
+def _procedure(code: str, copied: dict[str, str]) -> tuple[int, list[CopyStatement]] | None:
+    """Where the procedure division starts and its COPYs, or ``None`` if it is not judged."""
     divisions = list(_PROCEDURE.finditer(code))
     if len(divisions) != 1 or _UNSAFE_PROGRAM.search(code):
-        return []
+        return None
     start = divisions[0].end()
     line_of_start = code.count("\n", 0, start) + 1
     copies = [c for c in copy_statements(code) if c.line >= line_of_start]
-    if not _closed(copies, copied):
-        return []
+    return (start, copies) if _closed(copies, copied) else None
+
+
+def _is_unreachable(code: str, headers: list[re.Match[str]], k: int, haystack: str) -> bool:
+    """Whether paragraph *k* opens no section, is never named, and is never fallen into."""
+    header, previous = headers[k], headers[k - 1]
+    if header.group("section") or previous.group("section"):
+        return False
+    name = re.escape(header.group("name"))
+    mentions = re.findall(rf"(?<![\w-]){name}(?![\w-])", haystack, re.IGNORECASE)
+    return len(mentions) == 1 and _ends_in_transfer(code[previous.end() : header.start()])
+
+
+def _span(
+    code: str, headers: list[re.Match[str]], k: int, copies: list[CopyStatement]
+) -> tuple[int, int]:
+    """Paragraph *k*'s first and last line: up to the next header or the next COPY (a
+    procedure copybook opens its own paragraph), without the blank lines before it."""
+    first = code.count("\n", 0, headers[k].start()) + 1
+    last = code.count("\n", 0, headers[k + 1].start()) if k + 1 < len(headers) else None
+    last = min([c.line - 1 for c in copies if c.line > first] + [last or code.count("\n") + 1])
     lines = code.split("\n")
-    headers = [h for h in _HEADER.finditer(code, start) if _is_name(h.group("name"))]
-    haystack = "\n".join([code, *copied.values()])
-    out: list[tuple[str, int, int]] = []
-    for k, header in enumerate(headers):
-        if k == 0 or header.group("section") or headers[k - 1].group("section"):
-            continue
-        name = header.group("name")
-        mentions = re.findall(rf"(?<![\w-]){re.escape(name)}(?![\w-])", haystack, re.IGNORECASE)
-        if len(mentions) != 1 or not _ends_in_transfer(code[headers[k - 1].end() : header.start()]):
-            continue
-        first = code.count("\n", 0, header.start()) + 1
-        # Up to the next header or the next COPY (a procedure copybook opens its
-        # own paragraph), without the blank and comment lines before it.
-        last = code.count("\n", 0, headers[k + 1].start()) if k + 1 < len(headers) else None
-        last = min([c.line - 1 for c in copies if c.line > first] + [last or code.count("\n") + 1])
-        while last > first and not lines[last - 1].strip():
-            last -= 1
-        out.append((name.upper(), first, last))
-    return out
+    while last > first and not lines[last - 1].strip():
+        last -= 1
+    return first, last
 
 
 def _is_name(word: str) -> bool:
@@ -178,39 +196,51 @@ def unreachable_paragraph_findings(
     ctx: DeadCodeAnalyzer, whitelist: set[str]
 ) -> list[DeadCodeFindingData]:
     """An unused-internal finding per COBOL paragraph :func:`unreachable_paragraphs` returns."""
-    graph, sources = ctx.graph, ctx._source_map
+    sources = ctx._source_map
     findings: list[DeadCodeFindingData] = []
-    for path, data in graph.nodes(data=True):
-        if data.get("node_type") != "file" or data.get("language") != "cobol":
-            continue
-        if path not in sources or data.get("is_test") or _is_fixture_path(path):
-            continue
-        if ctx._should_never_flag(path, whitelist):
-            continue
+    for path in _judged_programs(ctx, whitelist):
         copied = {
             PurePosixPath(member).stem.upper(): code_view(sources[member])
-            for member in _copied_closure(graph, path)
+            for member in _copied_closure(ctx.graph, path)
             if member in sources
         }
         for name, start, end in unreachable_paragraphs(code_view(sources[path]), copied):
-            findings.append(
-                DeadCodeFindingData(
-                    kind=DeadCodeKind.UNUSED_INTERNAL,
-                    file_path=path,
-                    symbol_name=name,
-                    symbol_kind="function",
-                    confidence=COBOL_PARAGRAPH_CONFIDENCE,
-                    reason=f"Paragraph '{name}' is never named and nothing falls through into it",
-                    evidence=[
-                        f"No statement in the program or its copybooks names '{name}'",
-                        "The paragraph before it always transfers control away",
-                    ],
-                    safe_to_delete=False,
-                    risk_factors=list(path_risk_factors(path)),
-                    lines=end - start + 1,
-                    start_line=start,
-                    end_line=end,
-                    **ctx._git_fields(path),
-                )
-            )
+            findings.append(_finding(ctx, path, name, start, end))
     return findings
+
+
+def _judged_programs(ctx: DeadCodeAnalyzer, whitelist: set[str]) -> list[str]:
+    """The COBOL files with read source that no test, fixture or whitelist rule exempts."""
+    return [
+        path
+        for path, data in ctx.graph.nodes(data=True)
+        if data.get("node_type") == "file"
+        and data.get("language") == "cobol"
+        and path in ctx._source_map
+        and not data.get("is_test")
+        and not _is_fixture_path(path)
+        and not ctx._should_never_flag(path, whitelist)
+    ]
+
+
+def _finding(
+    ctx: DeadCodeAnalyzer, path: str, name: str, start: int, end: int
+) -> DeadCodeFindingData:
+    return DeadCodeFindingData(
+        kind=DeadCodeKind.UNUSED_INTERNAL,
+        file_path=path,
+        symbol_name=name,
+        symbol_kind="function",
+        confidence=COBOL_PARAGRAPH_CONFIDENCE,
+        reason=f"Paragraph '{name}' is never named and nothing falls through into it",
+        evidence=[
+            f"No statement in the program or its copybooks names '{name}'",
+            "The paragraph before it always transfers control away",
+        ],
+        safe_to_delete=False,
+        risk_factors=list(path_risk_factors(path)),
+        lines=end - start + 1,
+        start_line=start,
+        end_line=end,
+        **ctx._git_fields(path),
+    )

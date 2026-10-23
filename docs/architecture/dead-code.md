@@ -146,7 +146,9 @@ only at `>= 0.7` with no risk factor.
 
 `unused_internal`: private symbols with no `calls` edge and no cross-file
 importer, base `0.65`, never deletion-ready. Hidden on default surfaces by
-`finding_registry.py` (measured 0.5% precision, 1,511 findings).
+`finding_registry.py` (measured 0.5% precision, 1,511 findings). A COBOL
+paragraph is judged from the program's source text instead of edges
+(`cobol_paragraphs.py`), at `0.30`.
 
 `zombie_package`: a top-level directory with no inter-package import edges,
 base `0.50`, never deletion-ready. `_NEVER_PACKAGE_DIRS` skips non-package
