@@ -98,6 +98,7 @@ LanguageTag = Literal[
     "soql",
     "jcl",
     "bms",
+    "csd",
     "unknown",
 ]
 

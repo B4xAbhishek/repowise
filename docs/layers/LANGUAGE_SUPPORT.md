@@ -73,8 +73,11 @@ within each sfdx project's namespace.
 Scala, Elixir and F# have dedicated import resolvers with known gaps; see
 [Limits](#limits).
 
-\* COBOL is excluded from dead-code claims: JCL, schedulers and dynamic program
-calls are entry paths the repository graph cannot observe.
+\* COBOL files and programs get no dead-code claims: schedulers, region
+definitions outside the repo and dynamic program calls are entry paths the
+repository graph cannot observe. The one COBOL claim is a paragraph that
+nothing names and nothing falls through into, at low confidence and never
+deletion-ready.
 The COBOL and Apex grammars download on first use; offline, set
 `REPOWISE_GRAMMAR_DIR` to a pre-staged grammar cache. `repowise doctor` reports
 whether it is cached.
@@ -92,6 +95,10 @@ its program and the copybooks it copies; `CALL`, `LINK` and `XCTL` bind to a
 unique PROGRAM-ID. JCL (`.jcl`, `.prc`, `.proc`) links each job step to the
 program or PROC it runs, which makes that program an entry point, and BMS
 mapsets (`.bms`) are linked from the programs that send or receive their maps.
+CICS CSD definitions, in a `.csd` file or a DFHCSDUP step's in-stream input,
+link each defined program and each transaction's program, which makes it an
+entry point. `EXEC CICS RETURN` and `START` with a `TRANSID` link to the
+program that transaction runs when every definition of it agrees.
 Health measures each paragraph and section as a function: `IF`, `WHEN` arms,
 `PERFORM UNTIL/VARYING` loops and `AND`/`OR` add to its complexity, and data-only
 copybooks have no functions to flag.

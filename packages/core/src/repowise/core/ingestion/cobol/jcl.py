@@ -2,7 +2,8 @@
 
 Read line by line: ``//*`` comments are skipped and a statement continued on
 the next ``//`` line is joined to it. A step runs ``PGM=X`` or a procedure
-(``EXEC X`` / ``EXEC PROC=X``). In-stream data (``DD *``) is skipped.
+(``EXEC X`` / ``EXEC PROC=X``). In-stream data (``DD *``) is kept apart, for
+the CSD definitions a DFHCSDUP step reads there.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ class JclMember:
     jobs: list[str] = field(default_factory=list)
     procedures: list[str] = field(default_factory=list)
     steps: list[JclStep] = field(default_factory=list)
+    in_stream: list[tuple[int, str]] = field(default_factory=list)
 
 
 def read_jcl(text: str) -> JclMember:
@@ -42,7 +44,8 @@ def read_jcl(text: str) -> JclMember:
     lines = text.splitlines()
     in_stream = False
     for number, statement in _statements(lines):
-        if in_stream and not statement.startswith("//"):
+        if in_stream and not statement.startswith("/"):
+            member.in_stream.append((number, statement))
             continue
         in_stream = False
         m = _STATEMENT.match(statement)
