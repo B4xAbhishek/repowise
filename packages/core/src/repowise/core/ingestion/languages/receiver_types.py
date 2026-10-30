@@ -54,6 +54,29 @@ _INFERRED_FROM_NEW = re.compile(
     r"(?<![\w.])var\s+(?P<name>[a-z_]\w*)\s*=\s*new\s+(?P<type>[A-Z]\w*(?:\.\w+)*)"
 )
 
+# A C# property (``Foo Name { get; }``, ``Foo Name => _foo;``) or PascalCase
+# field (``Foo Name;``), which ``_TYPED_DECLARATION``'s lowercase name never
+# reads. Anchored to the start of a line, past attributes and modifiers, so
+# title-case words in a string or a switch arm (``Circle C => ..``) are no
+# member. The ``{`` closer must open accessors, or ``Foo Bar {`` could be a
+# type. Ceiling: a builtin-typed one (``string Name { get; }``) and a second
+# declarator (``Foo A, B;``) are not read.
+_CS_MODIFIERS = (
+    r"public|private|protected|internal|static|readonly|virtual|override|abstract|"
+    r"sealed|new|required|volatile|event|unsafe|extern|partial"
+)
+_CS_MEMBER = re.compile(
+    rf"(?m)^[ \t]*(?:\[[^\]\n]*\][ \t]*)*(?:(?:{_CS_MODIFIERS})[ \t]+)*"
+    rf"(?P<type>{_TYPE})\??[ \t]+(?P<name>[A-Z]\w*)[ \t]*(?=(?P<closer>[;=](?!=)|"
+    r"\{(?=\s*(?:(?:private|protected|internal)\s+)*(?:get|set|init)\b)))"
+)
+
+# ``foreach (Foo x in ..)``, which no closer of ``_TYPED_DECLARATION`` ends. No
+# closer: a loop variable is never a field.
+_CS_FOREACH_TYPED = re.compile(
+    rf"\bforeach\s*\(\s*(?P<type>{_TYPE})\??\s+(?P<name>[a-z_]\w*)\s+in\b"
+)
+
 # Truncating at ``//`` also cuts a URL in a string: it can only lose a
 # declaration, never invent one.
 _LINE_COMMENT = re.compile(r"//.*")
@@ -308,7 +331,7 @@ _CPP_DECLARATION = re.compile(
 _RUST_TYPE = r"(?:(?:crate|self|super)::(?:\w+::)*)?[A-Z]\w*"
 _RUST_ANNOTATED = re.compile(
     rf"(?<![\w.:'])(?P<name>[a-z_]\w*)\s*:\s*(?:&(?:'\w+\s+)?(?:mut\s+)?)?(?P<box>Box<)?"
-    rf"(?P<type>{_RUST_TYPE}(?:<(?:[^<>]|<[^<>]*>)*>)?)(?(box)>)\s*(?=[=,;)|])"
+    rf"(?P<type>{_RUST_TYPE}(?:<(?:[^<>]|<[^<>]*>)*>)?)(?(box)>)\s*(?=(?P<closer>[=,;)|]))"
 )
 
 # `let x = Foo::new(..)` and the other constructor-named associated functions,
@@ -350,7 +373,7 @@ _LANGUAGE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     # Apex declares Java's way (``Foo foo``) and has no ``var``.
     "apex": (_TYPED_DECLARATION,),
     "cpp": (_CPP_DECLARATION,),
-    "csharp": _C_FAMILY,
+    "csharp": (*_C_FAMILY, _CS_MEMBER, _CS_FOREACH_TYPED),
     "dart": _DART_FAMILY,
     "go": _GO_FAMILY,
     "java": (
@@ -373,7 +396,7 @@ RECEIVER_TYPE_LANGUAGES = frozenset(_LANGUAGE_PATTERNS)
 # writes ``self.foo.bar()``, a dotted receiver the grammar mints no call site
 # for, so class scope could only bind a bare local to a field. Membership rests
 # on the scan actually finding typed fields in the language's idiom.
-IMPLICIT_FIELD_LANGUAGES = frozenset({"apex", "csharp", "dart", "java", "kotlin", "swift"})
+IMPLICIT_FIELD_LANGUAGES = frozenset({"apex", "cpp", "csharp", "dart", "java", "kotlin", "swift"})
 
 # Languages whose scan keeps a declaration of a builtin type, marked external,
 # so the resolver can refuse a call on it instead of matching the method name.
@@ -385,6 +408,8 @@ EXTERNAL_TYPE_LANGUAGES = frozenset({"java"})
 # a builtin-typed local still reads as a variable and types overload arguments.
 _MARKED_BUILTIN_LANGUAGES = EXTERNAL_TYPE_LANGUAGES | {"kotlin", "apex"}
 _EXTERNAL_TYPE = "external:"
+#: A Kotlin string literal receiver, typed as a declared ``String`` would be.
+STRING_LITERAL_TYPE = _EXTERNAL_TYPE + "String"
 
 # A decorator that changes what the symbol it wraps *is*: `@shared_task` leaves
 # no function behind, so `add.s(...)` is a method call on `Task`. A table, since
@@ -421,8 +446,10 @@ _PY_TARGET_LISTS = (
 
 _PY_BINDINGS = (
     # `with ... as n`, `except ... as n`, `import x as n`.
-    re.compile(r"\bas\s+(?P<name>[a-z_]\w*)\b"),
-    re.compile(r"\b(?P<name>[a-z_]\w*)\s*:="),
+    # CapWords names bind too: a local `C = ...` shadows a module-level
+    # class of that name just as a lowercase local shadows a function.
+    re.compile(r"\bas\s+(?P<name>[A-Za-z_]\w*)\b"),
+    re.compile(r"\b(?P<name>[A-Za-z_]\w*)\s*:="),
 )
 
 # Every parameter of any `def` or `lambda` in the span, the enclosing one
@@ -435,11 +462,14 @@ _PY_PARAMETER_LISTS = (
     re.compile(r"\blambda\b(?P<lhs>[^:\n]*):"),
 )
 _PY_NAME = re.compile(r"(?<![\w.])[a-z_]\w*")
+# A Python parameter list binds CapWords names too (`def f(C): ...` shadows
+# a module-level class `C`); other languages keep reading `_PY_NAME` above.
+_PY_PARAMETER_NAME = re.compile(r"(?<![\w.])[A-Za-z_]\w*")
 
 # A plain `import` in a body is deliberately absent: it names the same module
 # symbol this scope resolves against (`from .tasks import ping`; `ping.delay()`).
 
-_PY_IDENTIFIER = re.compile(r"^[a-z_]\w*$")
+_PY_IDENTIFIER = re.compile(r"^[A-Za-z_]\w*$")
 
 # The TypeScript shapes that bind a name, typed or not. Every identifier in a
 # destructuring pattern counts, a renamed key included; a parameter's type
@@ -523,6 +553,32 @@ def _listed_bindings(
     return found
 
 
+# A `class` statement inside a function binds its name as a local, so no other
+# file's class of that name is called. One in a class body is a member symbol.
+_PY_NESTED_CLASS = re.compile(r"(?m)^(?P<indent>[ \t]+)class\s+(?P<name>[A-Za-z_]\w*)")
+_PY_STATEMENT_HEAD = re.compile(r"(?P<indent>[ \t]*)(?P<word>[A-Za-z_]\w*)")
+
+
+def _in_function_body(cleaned: str, start: int, indent: int) -> bool:
+    """Is the statement at *start*, *indent* deep, inside a ``def`` before any ``class``?
+
+    Walks up the lines, each shallower statement being the next enclosing block.
+    """
+    end = start
+    while end > 0:
+        line_start = cleaned.rfind("\n", 0, end - 1) + 1
+        head = _PY_STATEMENT_HEAD.match(cleaned, line_start, end)
+        end = line_start
+        if head is None or len(head.group("indent")) >= indent:
+            continue
+        if head.group("word") in ("def", "async"):
+            return True
+        if head.group("word") == "class":
+            return False
+        indent = len(head.group("indent"))
+    return False
+
+
 def _python_target_bindings(cleaned: str) -> set[tuple[int, str]]:
     found: set[tuple[int, str]] = set()
     for pattern in _PY_TARGET_LISTS:
@@ -532,6 +588,9 @@ def _python_target_bindings(cleaned: str) -> set[tuple[int, str]]:
                 name = target.strip()
                 if _PY_IDENTIFIER.match(name):
                     found.add((match.start("lhs"), name))
+    for match in _PY_NESTED_CLASS.finditer(cleaned):
+        if _in_function_body(cleaned, match.start(), len(match.group("indent"))):
+            found.add((match.start("name"), match.group("name")))
     return found
 
 
@@ -569,6 +628,12 @@ _LOCAL_NAME_SHAPES: dict[str, tuple[tuple[re.Pattern[str], ...], ...]] = {
                 r"(?m)(?:(?<=[(,=:>])|^)\s*\((?P<lhs>[\w\s,]*)\)\s*(?:async\s*)?(?:=>|\{)"
             ),
         ),
+    ),
+    # An `auto` local and a structured binding spell no type the scan reads,
+    # but still hide a field of their name.
+    "cpp": (
+        (re.compile(r"(?<![\w.])auto\s*[*&]{0,2}\s*(?P<name>[a-z_]\w*)\b"),),
+        (re.compile(r"(?<![\w.])auto\s*&{0,2}\s*\[(?P<lhs>[\w\s,]*)\]"),),
     ),
     "java": _JAVA_LAMBDA,
     "kotlin": (
@@ -620,7 +685,7 @@ def scan_binding_positions(text: str, language: str) -> tuple[tuple[int, int, st
     else:
         found = _python_target_bindings(cleaned)
         found |= _named_bindings(_PY_BINDINGS, cleaned)
-        found |= _listed_bindings(_PY_PARAMETER_LISTS, _PY_NAME, cleaned)
+        found |= _listed_bindings(_PY_PARAMETER_LISTS, _PY_PARAMETER_NAME, cleaned)
     positions = set()
     for offset, name in found:
         line = bisect_right(starts, offset)
@@ -931,10 +996,13 @@ _FIELD_CLOSERS = frozenset({";", "="})
 # semicolon-free TypeScript ``x: T`` are fields too. Kotlin and Swift keep a
 # closer only on a `val`/`var`/`let` match, so no parameter reaches here: a
 # Kotlin constructor property (`class R @Inject constructor(private val api:
-# Api)`) closes on `,` or `)`, a Swift computed property on `{`.
+# Api)`) closes on `,` or `)`, a Swift computed property on `{`, as a C# one does.
 _LANGUAGE_FIELD_CLOSERS: dict[str, frozenset[str]] = {
+    "csharp": frozenset({";", "=", "{"}),
     "kotlin": frozenset({"=", "\n", ",", ")"}),
     "python": frozenset({"=", "\n"}),
+    # A struct field, ``name: Type,``: parameters and ``let`` sit in function spans.
+    "rust": frozenset({","}),
     "swift": frozenset({"=", "\n", "{"}),
     "typescript": frozenset({";", "=", "\n"}),
 }
@@ -1004,23 +1072,28 @@ def _inside_parentheses(cleaned: str) -> Callable[[int], bool]:
     return inside
 
 
-# Kotlin and Swift run code at class scope that is not a function: an ``init``
-# block, a lambda or closure a property holds. A declaration there is a local
-# of that block, so only one directly in a type's body may be a field.
-_TYPE_BODY_SCOPED_LANGUAGES = frozenset({"kotlin", "swift"})
+# Kotlin, Swift and C# run code at class scope that is not a function: an
+# ``init`` block, a lambda or closure a property holds, a property accessor. A
+# declaration there is a local of that block, so only one directly in a type's
+# body may be a field. C# has its own keywords: ``object`` is a type there.
 _BRACE = re.compile(r"[{};]")
 # A function, accessor or initialiser declared after a bodiless type.
 _CODE_HEADER = re.compile(r"\b(?:fun|func|init|get|set)\b")
 _TYPE_HEADER = re.compile(r"\b(?:class|object|interface|struct|enum|extension|protocol|actor)\b")
+_TYPE_HEADERS: dict[str, re.Pattern[str]] = {
+    "csharp": re.compile(r"\b(?:class|interface|struct|enum|record)\b"),
+    "kotlin": _TYPE_HEADER,
+    "swift": _TYPE_HEADER,
+}
 
 
-def _opens_type_body(header: str) -> bool:
+def _opens_type_body(header: str, type_header: re.Pattern[str]) -> bool:
     """Does a ``{`` after *header* open a type's body?
 
     The last type keyword decides, unless an expression leads into it:
     ``val f = object : T {`` is an anonymous object, not a declared type.
     """
-    keywords = list(_TYPE_HEADER.finditer(header))
+    keywords = list(type_header.finditer(header))
     if not keywords:
         return False
     before = header[: keywords[-1].start()].rstrip()
@@ -1028,7 +1101,7 @@ def _opens_type_body(header: str) -> bool:
     return not before.endswith(("=", "(", ",", "return")) and not _CODE_HEADER.search(after)
 
 
-def _in_type_body(cleaned: str) -> Callable[[int], bool]:
+def _in_type_body(cleaned: str, type_header: re.Pattern[str]) -> Callable[[int], bool]:
     """Is the innermost ``{`` open at an offset of *cleaned* a type's body (or none)?
 
     None counts: a primary constructor's ``val`` parameters sit before any brace.
@@ -1044,7 +1117,7 @@ def _in_type_body(cleaned: str) -> Callable[[int], bool]:
     for match in _BRACE.finditer(cleaned):
         char = match.group()
         if char == "{":
-            stack.append(_opens_type_body(cleaned[segment_start : match.start()]))
+            stack.append(_opens_type_body(cleaned[segment_start : match.start()], type_header))
         elif char == "}" and stack:
             stack.pop()
         segment_start = match.end()
@@ -1074,7 +1147,8 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
     resolved: dict[str, tuple[str | None, bool]] = {}
     found: list[Declaration] = []
     inside = _inside_parentheses(cleaned) if language in _PARAMETERS_AT_CLASS_SCOPE else None
-    in_type_body = _in_type_body(cleaned) if language in _TYPE_BODY_SCOPED_LANGUAGES else None
+    type_header = _TYPE_HEADERS.get(language)
+    in_type_body = _in_type_body(cleaned, type_header) if type_header else None
     for pattern in patterns:
         for match in pattern.finditer(cleaned):
             if pattern is _KT_CONSTRUCTED_LAMBDA and not _ends_statement(
@@ -1171,8 +1245,16 @@ _DART_CALL_ASSIGNMENT = re.compile(
     rf"(?<![\w.])(?:final|var|const)\s+(?P<name>[a-z_]\w*)\s*=\s*(?P<awaited>await\s+)?"
     rf"(?:(?:new|const)\s+)?{_CALL_HEAD}"
 )
+# ``var x = f(..);``, ``using var x = await obj.f<T>(..);``. A C# ``await``
+# unwraps the ``Task<T>`` or ``ValueTask<T>`` the callee declares.
+_CS_CALL_ASSIGNMENT = re.compile(
+    r"(?<![\w.])var\s+(?P<name>[a-z_]\w*)\s*=\s*(?P<awaited>await\s+)?"
+    r"(?:(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.)?(?P<target>[A-Za-z_]\w*)\s*"
+    r"(?:<[^<>()]*(?:<[^<>()]*>[^<>()]*)*>)?\s*\("
+)
 
 _CALL_ASSIGNMENT_PATTERNS: dict[str, re.Pattern[str]] = {
+    "csharp": _CS_CALL_ASSIGNMENT,
     "dart": _DART_CALL_ASSIGNMENT,
     "go": _GO_CALL_DECL,
     "kotlin": _KT_CALL_ASSIGNMENT,
@@ -1186,8 +1268,12 @@ CALL_TYPED_LANGUAGES = frozenset(_CALL_ASSIGNMENT_PATTERNS)
 _QUOTES = frozenset("\"'`")
 _STATEMENT_ENDS = frozenset("\n;}")
 # A Python ``;`` may rebind the name later on the line, where no scan sees it.
-# Dart ends a statement only at ``;``, so ``f()\n.g()`` is one statement.
-_LANGUAGE_STATEMENT_ENDS = {"python": frozenset("\n"), "dart": frozenset(";")}
+# Dart and C# end a statement only at ``;``, so ``f()\n.g()`` is one statement.
+_LANGUAGE_STATEMENT_ENDS = {
+    "python": frozenset("\n"),
+    "dart": frozenset(";"),
+    "csharp": frozenset(";"),
+}
 # Kotlin and Swift may carry a statement onto a line that starts with a member
 # access or an operator (``.f()``, ``?: x``, ``as T``, ``&& y``). Refused
 # wholesale: a new statement starting so only costs the local its type.
@@ -1262,7 +1348,7 @@ def _ends_statement(cleaned: str, end: int, language: str, start: int = 0) -> bo
     """Does the expression ending at *end* end its statement (-1: it never ends)?"""
     if end < 0:
         return False
-    rest = cleaned[end:].lstrip(" \t\n" if language == "dart" else " \t")
+    rest = cleaned[end:].lstrip(" \t\r\n" if language in ("dart", "csharp") else " \t")
     if (
         language == "swift"
         and _SWIFT_OPTIONAL_BINDING_PREFIX.search(cleaned[:start])
@@ -1456,7 +1542,7 @@ def types_by_class(
 # is whatever ranging over ``expr``'s container yields in its position. Two
 # scans feed it, the clauses and the containers they may range over, and the
 # resolver joins them, since only it can type ``expr`` itself.
-RANGE_LANGUAGES = frozenset({"go", "dart"})
+RANGE_LANGUAGES = frozenset({"go", "dart", "csharp"})
 
 # What ranging over each container shape yields, the group name giving the
 # position: ``[]T``, ``[N]T`` and a variadic ``...T`` an int index, then a
@@ -1538,6 +1624,44 @@ _DART_FOR_IN = re.compile(
     rf"(?P<head>{_DART_NAME})(?:\.(?P<member>[A-Za-z_]\w*)(?P<call>\(\))?)?\s*\)"
 )
 
+# C#'s ``foreach (var x in head[.member[()]])``, ``await foreach`` too: ``x`` is
+# the element of a generic collection or an array. A written element type is
+# read by ``_CS_FOREACH_TYPED``. A field or property head may be PascalCase.
+_CS_ITERABLE = (
+    r"(?:List|IList|IEnumerable|ICollection|IReadOnlyCollection|IReadOnlyList|HashSet|ISet"
+    r"|Collection|ReadOnlyCollection)"
+)
+_CS_ELEMENT = r"[A-Za-z_]\w*(?:<[^<>\n]*>)?"
+_CS_ELEMENT_SHAPES = (
+    re.compile(rf"{_CS_ITERABLE}\s*<\s*(?P<value>{_CS_ELEMENT})\??\s*>"),
+    re.compile(rf"(?P<value>{_CS_ELEMENT})\[\]"),
+)
+_CS_CONTAINER = (
+    rf"(?:{_CS_ITERABLE}\s*<[^<>\n]*(?:<[^<>\n]*>[^<>\n]*)*>|{_CS_ELEMENT}\[\])"
+)
+# A parameter, a local, a field or a property (``{`` opens its accessors).
+_CS_CONTAINER_DECLARATIONS = (
+    re.compile(
+        rf"(?<![\w.])(?P<type>{_CS_CONTAINER})\??\s+(?P<name>[A-Za-z_]\w*)\s*"
+        r"(?=(?P<closer>[=;,)]|\{))"
+    ),
+)
+_CS_FOREACH = re.compile(
+    r"\bforeach\s*\(\s*var\s+(?P<value>[a-z_]\w*)\s+in\s+"
+    r"(?P<head>[A-Za-z_]\w*)(?:\.(?P<member>[A-Za-z_]\w*)(?P<call>\(\))?)?\s*\)"
+)
+
+_RANGE_SCANS = {
+    "csharp": (_CS_FOREACH, _CS_CONTAINER_DECLARATIONS),
+    "dart": (_DART_FOR_IN, _DART_CONTAINER_DECLARATIONS),
+    "go": (_GO_RANGE, _GO_CONTAINER_DECLARATIONS),
+}
+_ELEMENT_SHAPES = {
+    "csharp": _CS_ELEMENT_SHAPES,
+    "dart": _DART_ELEMENT_SHAPES,
+    "go": _GO_ELEMENT_SHAPES,
+}
+
 
 class RangeClause(NamedTuple):
     """One ``for key, value := range head[.member[()]]`` at one line.
@@ -1568,12 +1692,8 @@ def scan_ranges(text: str, language: str) -> RangeScan:
         return RangeScan((), ())
     cleaned = _without_comments(text, language)
     starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
-    if language == "dart":
-        clause_pattern, declaration_patterns = _DART_FOR_IN, _DART_CONTAINER_DECLARATIONS
-        inside = _inside_parentheses(cleaned)
-    else:
-        clause_pattern, declaration_patterns = _GO_RANGE, _GO_CONTAINER_DECLARATIONS
-        inside = None
+    clause_pattern, declaration_patterns = _RANGE_SCANS[language]
+    inside = _inside_parentheses(cleaned) if language == "dart" else None
     clauses = tuple(
         RangeClause(
             bisect_right(starts, match.start()),
@@ -1618,8 +1738,7 @@ def range_element_types(
             return None
         return _usable_type_name(raw, language)[0]
 
-    shapes = _DART_ELEMENT_SHAPES if language == "dart" else _GO_ELEMENT_SHAPES
-    for shape in shapes:
+    for shape in _ELEMENT_SHAPES[language]:
         match = shape.fullmatch(spelling)
         if match is not None:
             groups = match.groupdict()
@@ -1634,3 +1753,154 @@ def clauses_in_span(
     first = bisect_left(clauses, start_line, key=lambda c: c.line)
     last = bisect_right(clauses, end_line, key=lambda c: c.line)
     return clauses[first:last]
+
+
+# Dart's one-element ``Iterable`` callbacks. ``items.forEach((p) => p.m())``
+# binds ``p`` to an element of ``items``, though no type is spelled. ``fold``
+# leads with its accumulator and ``reduce`` and ``sort`` take two parameters,
+# so none of those is read: only a callback of exactly one element is.
+DART_CALLBACK_METHODS = (
+    "forEach",
+    "map",
+    "where",
+    "any",
+    "every",
+    "firstWhere",
+    "lastWhere",
+    "singleWhere",
+    "expand",
+)
+
+# ``head[.member[()]].method((name) => ..)``, or ``((name) { .. })``: the
+# function literal is the call's first argument and its list is one bare name.
+# A written type (``(Repo p) => ..``) is ``_DART_TYPED``'s and never matches
+# here. ``head`` follows no ``.``, so ``a.b.c.forEach`` is refused as the
+# for-in clause refuses ``a.b.c``.
+_DART_CALLBACK = re.compile(
+    rf"(?<![\w.$])(?P<head>{_DART_NAME})"
+    rf"(?:\??\.(?P<member>[A-Za-z_]\w*)(?P<call>\(\))?)?"
+    rf"\??\.(?P<method>{'|'.join(DART_CALLBACK_METHODS)})\s*\(\s*"
+    rf"\(\s*(?P<name>{_DART_NAME})\s*\)\s*(?:async\s*)?(?P<arrow>=>|\{{)"
+)
+
+
+class DartCallback(NamedTuple):
+    """One function literal handed to an ``Iterable`` method, and where it lives.
+
+    ``name`` is the literal's one parameter. ``start`` and ``end`` are the
+    lines the literal covers, and ``begin`` and ``finish`` its offsets, which
+    tell a literal nested in another from one beside it on the same line.
+    ``head``, ``member`` and ``call`` read the receiver as a for-in clause does.
+    """
+
+    start: int
+    end: int
+    begin: int
+    finish: int
+    name: str
+    head: str
+    member: str
+    call: bool
+    method: str
+
+
+def _skip_dart_string(text: str, at: int) -> int:
+    """The offset just past the string literal opening at *at*, or -1 if unterminated.
+
+    Interpolation is skipped with the string. Ceiling: a quote of the string's
+    own kind inside an interpolation (``'${m['k']}'``) ends it early.
+    """
+    quote = text[at]
+    closer = quote * 3 if text.startswith(quote * 3, at) else quote
+    raw = at > 0 and text[at - 1] == "r"
+    index = at + len(closer)
+    while index < len(text):
+        if text[index] == "\\" and not raw:
+            index += 2
+        elif text.startswith(closer, index):
+            return index + len(closer)
+        elif len(closer) == 1 and text[index] == "\n":
+            return -1
+        else:
+            index += 1
+    return -1
+
+
+def _callback_end(cleaned: str, at: int, block: bool) -> int | None:
+    """The offset just past the function literal whose body starts at *at*.
+
+    A block body ends at the brace matching the one before *at*. An expression
+    body ends at the comma or unmatched parenthesis that closes the argument.
+    None where the brackets never balance, so the literal is dropped, not
+    guessed at.
+    """
+    depth = 1 if block else 0
+    index = at
+    while index < len(cleaned):
+        char = cleaned[index]
+        if char in "'\"":
+            index = _skip_dart_string(cleaned, index)
+            if index < 0:
+                return None
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if block and depth == 0:
+                return index + 1
+            if not block and depth < 0:
+                return index
+        elif not block and depth == 0 and char in ",;":
+            return index
+        index += 1
+    return None
+
+
+def scan_dart_callbacks(text: str) -> tuple[DartCallback, ...]:
+    """Every one-element ``Iterable`` callback *text* passes, in source order."""
+    cleaned = _without_comments(text, "dart")
+    starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
+    found: list[DartCallback] = []
+    for match in _DART_CALLBACK.finditer(cleaned):
+        finish = _callback_end(cleaned, match.end(), match.group("arrow") == "{")
+        if finish is None:
+            continue
+        found.append(
+            DartCallback(
+                bisect_right(starts, match.start("name")),
+                bisect_right(starts, max(finish - 1, match.start("name"))),
+                match.start("name"),
+                finish,
+                match.group("name"),
+                match.group("head"),
+                match.group("member") or "",
+                bool(match.group("call")),
+                match.group("method"),
+            )
+        )
+    return tuple(found)
+
+
+def callbacks_in_span(
+    callbacks: tuple[DartCallback, ...], start_line: int, end_line: int
+) -> tuple[DartCallback, ...]:
+    """The callbacks whose parameter sits inside one function body, in source order."""
+    return tuple(c for c in callbacks if start_line <= c.start <= end_line)
+
+
+def callbacks_binding(
+    callbacks: Iterable[DartCallback], name: str, line: int
+) -> tuple[DartCallback, ...]:
+    """The innermost callbacks that bind *name* on *line*.
+
+    A literal nested in another covers the same lines, so the outer one is
+    dropped. Two literals side by side on one line cannot be told apart by
+    line alone, so both stay and the caller must agree between them.
+    """
+    covering = [c for c in callbacks if c.name == name and c.start <= line <= c.end]
+    return tuple(
+        c
+        for c in covering
+        if not any(o is not c and c.begin < o.begin and o.finish <= c.finish for o in covering)
+    )

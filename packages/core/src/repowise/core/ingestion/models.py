@@ -98,6 +98,7 @@ LanguageTag = Literal[
     "soql",
     "jcl",
     "bms",
+    "csd",
     "unknown",
 ]
 
@@ -157,6 +158,9 @@ SymbolKind = Literal[
     "property",
 ]
 
+#: Kinds that name a stored value rather than behaviour or a type.
+VALUE_SYMBOL_KINDS: frozenset[str] = frozenset({"constant", "variable", "property"})
+
 # ---------------------------------------------------------------------------
 # Core models
 # ---------------------------------------------------------------------------
@@ -183,6 +187,9 @@ class FileInfo:
     # Reached from outside the import graph (a runner or loader starts it), so
     # dead-code analysis never flags it. Read through ``is_reachability_root``.
     is_reachability_root: bool = False
+    # Starts a framework application (``SpringApplication.run``): ranked with
+    # the manifest entries, but not a public API the way those are.
+    is_application_main: bool = False
 
 
 @dataclass
@@ -208,6 +215,9 @@ class RepoStructure:
     total_files: int
     total_loc: int
     entry_points: list[str]
+    # The entry points that start a framework application, which make the repo
+    # a service and lead the orientation list.
+    application_mains: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -280,6 +290,8 @@ class NamedBinding:
     is_module_alias: bool = False  # True for "import x" / "import * as ns"
     is_global: bool = False  # C# `global using` — applies to every file in the project
     is_static_import: bool = False  # C# `using static` / Java static import — pulls members
+    # Java ``import static a.B.m``: the type ``B`` that declares the member.
+    member_of: str | None = None
     # Position of the local name (1-based line, byte column), set where a
     # binding can sit inside a function body (``require``, ``import()``), so
     # it is not read as a shadowing local.
@@ -343,6 +355,14 @@ class CallReceiver:
 #: site may produce.
 CallSiteEdgeType = Literal["calls", "references"]
 
+#: The ``receiver_name`` of a Kotlin call on a string literal (``"/".encodeUtf8()``):
+#: no name can be spelled this way, and receiver typing reads it as ``String``.
+STRING_LITERAL_RECEIVER = '""'
+
+#: The argument type of a C# unsuffixed integer constant, which converts to any
+#: numeric type its value fits, unlike an ``int`` value.
+CSHARP_INTEGER_CONSTANT = "int constant"
+
 
 @dataclass
 class CallSite:
@@ -366,7 +386,8 @@ class CallSite:
     supplied_props: set[str] | None = None  # prop names supplied in JSX element (None if unknown/spread)
     # The grammar's bare-call pattern also matched this member call (Java
     # ``obj.m()``, Ruby ``obj.m(x)``). Its bare-name reading is asked only
-    # when no receiver strategy answers, never beside one.
+    # when no receiver strategy answers, never beside one. With no receiver
+    # it means ``on_unnamed_object`` instead.
     bare_name_fallback: bool = False
     # Handed straight to a task scheduler (``asyncio.create_task(f())``): it runs
     # later, beside its caller, so the caller neither waits for it nor repeats it.
@@ -374,11 +395,21 @@ class CallSite:
     # COBOL ``CALL`` / ``LINK`` / ``XCTL``: names a PROGRAM-ID, never a paragraph.
     program_call: bool = False
     # Java: each argument's type where it is a literal (``"String"``, ``"int"``,
-    # ``"null"``), else None; None overall when no argument is one.
+    # ``"null"``), a class literal (``"Class"``), a String concatenation or a
+    # lambda (``"->0:value"``), else None; None overall when no argument is one.
+    # C# writes a lambda's or a construction's shape here (``"=>2"``, ``"new Foo"``).
     argument_types: tuple[str | None, ...] | None = None
-    # Java: each argument that is a bare name (``start``), else None; None overall
+    # Java and C#: each argument that is a bare name (``start``), else None; None overall
     # when no argument is one. The resolver reads its declared type.
     argument_names: tuple[str | None, ...] | None = None
+
+    @property
+    def on_unnamed_object(self) -> bool:
+        """A Java call on an object no pattern names (``a.b.m()``, ``arr[0].m()``).
+
+        Only repo-wide uniqueness binds it. A call with a receiver never is one.
+        """
+        return self.bare_name_fallback and not (self.receiver_name or self.receiver_call)
 
 
 # Raw extractor kinds, not the TS ``HeritageKind`` (a different payload);
@@ -762,6 +793,9 @@ class ParsedFile:
     symbols: list[Symbol]
     imports: list[Import]
     exports: list[str]  # names exported by this file
+    # Go's package clause affects the names callers use after importing a
+    # directory, but it is not a Symbol. Store it for incremental surface checks.
+    module_name: str | None = None
     # ``{exported name: local name}`` where a TS/JS module publishes a symbol
     # it declares under a different name (``export { stringType as string }``).
     # Empty for every other language and for the far commoner clause that does
@@ -790,6 +824,9 @@ class ParsedFile:
     references: list[CallSite] = field(default_factory=list)
     # Salesforce objects and fields this file names (see ``salesforce_schema``).
     schema_refs: list[SchemaReference] = field(default_factory=list)
+    # Parsed without its language's grammar (not installed, or a download
+    # failed): a stand-in the parse cache must not keep once the grammar loads.
+    grammar_missing: bool = False
 
     @property
     def symbol_count(self) -> int:

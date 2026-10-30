@@ -7,6 +7,7 @@ from typing import Any
 
 from repowise.core.analysis.actions.engine import NEXT_ACTIONS_HEAD
 from repowise.core.persistence.crud.analysis.actions import load_actions_view
+from repowise.server.mcp_server._helpers import _cross_repo_cut
 
 logger = logging.getLogger(__name__)
 
@@ -61,14 +62,17 @@ def compact_actions_view(view: dict[str, Any], *, full: bool = True) -> dict[str
                 _compact(a, full=full) for a in horizon.get("actions", [])[:_PER_HORIZON]
             ]
         block[name] = row
-    unavailable = sorted(view.get("unavailable") or {})
-    if unavailable:
-        block["unavailable"] = unavailable
+    # ``unavailable`` stays the sorted name list older readers expect;
+    # ``unavailable_reasons`` says why each one is missing.
+    reasons = view.get("unavailable") or {}
+    if reasons:
+        block["unavailable"] = sorted(reasons)
+        block["unavailable_reasons"] = dict(sorted(reasons.items()))
     return block
 
 
 async def _build_next_actions(
-    session: Any, repository: Any, *, full: bool = False
+    session: Any, repository: Any, *, full: bool = False, alias: str | None = None
 ) -> tuple[dict[str, Any], str | None]:
     """``(block, None)``, or ``({}, reason)`` when the actions could not be read.
 
@@ -79,7 +83,7 @@ async def _build_next_actions(
     """
     try:
         async with session.begin_nested():
-            view = await load_actions_view(session, repository.id)
+            view = await load_actions_view(session, repository.id, **_cross_repo_cut(alias))
         return compact_actions_view(view, full=full), None
     except Exception as exc:
         logger.warning("get_overview: next actions unavailable: %s", exc)

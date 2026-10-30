@@ -28,6 +28,8 @@ Capture-name conventions (shared across ALL .scm files):
 
 from __future__ import annotations
 
+from typing import Any
+
 from tree_sitter import Language
 
 from ..extractors import extract_heritage, extract_module_docstring
@@ -79,6 +81,7 @@ from .grammars import (
     _load_compiled_query,
     _parse_tree,
     _recover_kotlin_annotated_declarations,
+    _recover_kotlin_misparsed_spans,
     failed_query_languages,
     grammar_tag_for,
     log,
@@ -203,12 +206,14 @@ class ASTParser:
 
         recovered_annotations: dict[int, tuple[int, str]] = {}
         if lang == "kotlin":
+            parsed_root = root
+            root, source = _recover_kotlin_misparsed_spans(language, root, source)
             root, source, recovered_annotations = _recover_kotlin_annotated_declarations(
                 language,
                 root,
                 source,
             )
-            if recovered_annotations:
+            if recovered_annotations or root is not parsed_root:
                 parse_errors = _collect_error_nodes(root)
 
         src = source.decode("utf-8", errors="replace")
@@ -219,7 +224,7 @@ class ASTParser:
         matches = _run_query(query, root) if query is not None else []
 
         symbols = _finalize_symbols(
-            _extract_symbols(matches, config, file_info, src), root, src, file_info
+            _extract_symbols(matches, config, file_info, src, original_source), root, src, file_info
         )
         _restore_kotlin_annotations(symbols, recovered_annotations)
         imports = _extract_imports(matches, config, file_info, src)
@@ -245,6 +250,7 @@ class ASTParser:
             symbols=symbols,
             imports=imports,
             exports=_derive_exports(symbols),
+            module_name=_go_package_name(root) if lang == "go" else None,
             export_aliases=ts_export_aliases(src) if lang in _TS_JS_LANGUAGES else {},
             calls=calls,
             heritage=extract_heritage(matches, config, file_info, src),
@@ -260,6 +266,17 @@ class ASTParser:
                 apex_schema_refs(root, symbols, file_info.path) if lang == "apex" else []
             ),
         )
+
+
+def _go_package_name(root: Any) -> str | None:
+    """Return the Go package clause, which participates in import resolution."""
+    for node in root.named_children:
+        if node.type != "package_clause":
+            continue
+        for child in node.named_children:
+            if child.type == "package_identifier":
+                return child.text.decode("utf-8", errors="replace")
+    return None
 
 
 def _is_fsharp_signature(file_info: FileInfo) -> bool:
@@ -294,6 +311,7 @@ def _parse_without_grammar(
         docstring=None,
         parse_errors=[],
         content_hash=content_hash,
+        grammar_missing=config is not None and language is None,
     )
 
 
@@ -316,12 +334,15 @@ def _masked_call_sites(lang: str, original_source: bytes, symbols: list[Symbol])
 
 
 def _warn_symbol_bloat(file_info: FileInfo, symbols: list[Symbol]) -> None:
-    if len(symbols) > _SYMBOL_COUNT_WARN_THRESHOLD:
+    # COBOL's only children are level-88 condition names: values of one data
+    # item, not declarations. Methods still count, so a generated class warns.
+    counted = sum(1 for s in symbols if not (s.language == "cobol" and s.parent_name))
+    if counted > _SYMBOL_COUNT_WARN_THRESHOLD:
         log.warning(
             "parser.symbol_bloat",
             path=file_info.path,
             language=file_info.language,
-            symbol_count=len(symbols),
+            symbol_count=counted,
             threshold=_SYMBOL_COUNT_WARN_THRESHOLD,
         )
 

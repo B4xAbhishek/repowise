@@ -9,7 +9,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -61,6 +62,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -720,7 +722,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/classes.ts": {
     "file_info": {
@@ -732,7 +735,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -991,6 +995,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1018,7 +1023,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/conditionals.ts": {
     "file_info": {
@@ -1030,7 +1036,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -1109,6 +1116,7 @@
       "sixOps",
       "twoOps"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -1119,7 +1127,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/nested.ts": {
     "file_info": {
@@ -1131,7 +1140,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -1186,6 +1196,7 @@
       "deeplyNested",
       "shallow"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -1196,7 +1207,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/perf_io_in_loop.ts": {
     "file_info": {
@@ -1208,7 +1220,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -1344,6 +1357,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1355,6 +1369,7 @@
       }
     ],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1420,7 +1435,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/ts_class_modifiers.ts": {
     "file_info": {
@@ -1432,7 +1448,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -1788,6 +1805,7 @@
       "Service",
       "Repository"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1837,7 +1855,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/ts_module_consts.ts": {
     "file_info": {
@@ -1849,7 +1868,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -1997,6 +2017,7 @@
       "mode",
       "limit"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -2024,7 +2045,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/ts_overload_fn_method.ts": {
     "file_info": {
@@ -2036,7 +2058,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -2324,6 +2347,7 @@
       "Client",
       "Transport"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -2351,6 +2375,7 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

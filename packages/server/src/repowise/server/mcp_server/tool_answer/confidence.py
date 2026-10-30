@@ -14,6 +14,8 @@ gate reads live beside it.
 from __future__ import annotations
 
 import re
+from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
@@ -24,6 +26,7 @@ from repowise.server.mcp_server._answer_context import (
     is_why_question as _is_why_question,
 )
 from repowise.server.mcp_server._meta import _normalize_target_path
+from repowise.server.mcp_server._query_terms import STOPWORDS, split_humps
 from repowise.server.mcp_server._retrieval_rank import window_term_weight
 from repowise.server.mcp_server.tool_answer.config import (
     _AGREEMENT_RANK_GAP,
@@ -36,6 +39,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _EARN_HIGH_GROUNDING_ENV,
     _EARN_HIGH_ON_WEAK_RETRIEVAL_ENV,
     _ENRICH_TOP_N_HITS,
+    _GAP_MARKERS,
     _HEDGE_MARKERS,
     _HIGH_CONFIDENCE_SCORE_FLOOR,
     _INLINE_BODY_MAX_LINES,
@@ -53,15 +57,63 @@ from repowise.server.mcp_server.tool_answer.hydration import (
 from repowise.server.mcp_server.tool_answer.symbols import is_symbol_lookup_question
 
 
-def _answer_is_hedged(answer_text: str) -> bool:
-    """True when the synthesized answer confesses it can't answer.
+def _answer_is_hedged(answer_text: str, question: str = "") -> bool:
+    """True when the answer admits it cannot answer before it states anything.
 
-    The model admits insufficiency even on a top-scoring hit, so an admitted
-    non-answer is low confidence however dominant retrieval was. Curly
-    apostrophes are normalized first, or they would slip every "can't" marker.
+    An admission (a hedge or gap phrase) that comes before any sentence naming
+    code the question did not is a non-answer, low however dominant retrieval
+    was. One that follows such a claim is a caveat on a grounded answer:
+    :func:`_admitted_gap` holds that at "medium" instead.
     """
-    low = (answer_text or "").lower().replace("\u2019", "'").replace("\u02bc", "'")
-    return any(marker in low for marker in _HEDGE_MARKERS)
+    for sentence in _sentences(answer_text):
+        if _is_admission(sentence):
+            return True
+        if _names_code(sentence, question):
+            return False
+    return False
+
+
+def _normalized(answer_text: str) -> str:
+    """Lower-cased, with curly apostrophes folded so "can't" markers match."""
+    return (answer_text or "").lower().replace("\u2019", "'").replace("\u02bc", "'")
+
+
+_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+# "X is not included" with nothing after it but the clause end. Followed by a
+# preposition it describes the code ("not included in the checksum").
+_BARE_GAP_RE = re.compile(
+    r"\b(?:is|are)(?:n't| not) (?:included|shown)\b"
+    r"(?!\s+(?:in|by|on|from|with|as|for|to|within|under|when|if|unless)\b)"
+    # "... is not present." ends the sentence: nothing left for it to describe.
+    r"|\b(?:is|are)(?:n't| not) present\s*\.?$"
+)
+
+
+def _sentences(answer_text: str) -> list[str]:
+    return [s for s in (p.strip() for p in _SENTENCE_BREAK_RE.split(answer_text or "")) if s]
+
+
+def _is_admission(sentence: str) -> bool:
+    """Does *sentence* say something asked is not in the evidence?"""
+    low = _normalized(sentence)
+    return (
+        _BARE_GAP_RE.search(low) is not None
+        or any(marker in low for marker in _HEDGE_MARKERS)
+        or any(marker in low for marker in _GAP_MARKERS)
+    )
+
+
+def _names_code(sentence: str, question: str) -> bool:
+    """Does *sentence* name a code term (not a path) that *question* did not?"""
+    q_lower = (question or "").lower()
+    terms = _distinctive_terms(_PATH_TOKEN_RE.sub(" ", sentence))
+    return any(t.lower() not in q_lower for t in terms)
+
+
+def _admitted_gap(answer_text: str) -> str | None:
+    """The sentence in which the answer says part of the question is outside its evidence."""
+    return next((s for s in _sentences(answer_text) if _is_admission(s)), None)
 
 
 # Question shapes that ask for a specific value: defaults, thresholds,
@@ -236,8 +288,7 @@ def _has_unqualified_exclusivity_over_truncated(
     """
     if not any(b.get("truncated") for b in (symbol_bodies or [])):
         return False
-    low = (answer_text or "").lower()
-    low = low.replace("\u2019", "'").replace("\u02bc", "'")
+    low = _normalized(answer_text)
     return any(tok in low for tok in _EXCLUSIVITY_TOKENS)
 
 
@@ -245,11 +296,13 @@ def _has_unqualified_exclusivity_over_truncated(
 # A backticked span ending in a source-file extension is a PATH, so its dotted
 # components are not symbol references: ``store.py`` says nothing about a symbol
 # named ``py`` (or one named ``store``).
-_PATHISH_SPAN_RE = re.compile(
-    r"\.(py|pyi|ts|tsx|js|jsx|mjs|cjs|go|java|rb|php|rs|c|h|cc|cpp|hpp|cs|kt|kts|"
-    r"swift|scala|sql|sh|md|json|ya?ml|toml|txt|cfg|ini|lock)$",
-    re.IGNORECASE,
+_SOURCE_EXTS = (
+    r"(py|pyi|ts|tsx|js|jsx|mjs|cjs|go|java|rb|php|rs|c|h|cc|cpp|hpp|cs|kt|kts|"
+    r"swift|scala|sql|sh|md|json|ya?ml|toml|txt|cfg|ini|lock)"
 )
+_PATHISH_SPAN_RE = re.compile(rf"\.{_SOURCE_EXTS}$", re.IGNORECASE)
+# A file path inside prose: naming where to look is not a claim about the code.
+_PATH_TOKEN_RE = re.compile(rf"[\w./-]*\.{_SOURCE_EXTS}\b", re.IGNORECASE)
 
 
 def _code_reference(text: str, name: str) -> bool:
@@ -549,6 +602,12 @@ def body_leaves_out(question: str, body: dict, served: list[set[str]]) -> list[s
     return _left_out(words, _text_stems(body.get("source") or ""), served)
 
 
+def _unserved_words(question: str, hits: list[dict]) -> bool:
+    """Does the question ask a word no retrieved hit carries?"""
+    served = hit_stems(hits)
+    return any(not any(_stem_hit(t, s) for s in served) for t in _question_words(question))
+
+
 def _question_words(question: str) -> dict[str, str]:
     return {t: w for t, w in _text_words(question).items() if t not in _QUESTION_FRAME_STEMS}
 
@@ -711,6 +770,14 @@ class _Grade(NamedTuple):
     named_body_cut: dict | None
     #: The file the answer leads with when it cites files but not the top hit.
     lead_off_top: str | None = None
+    #: The answer's own sentence saying part of the question is not in the evidence.
+    admitted_gap: str | None = None
+    #: Code names the question writes that nothing in the repository defines or writes.
+    absent_names: tuple[str, ...] = ()
+    #: Question names defined in several files the answer does not tell apart, with those files.
+    split_names: dict[str, list[str]] | None = None
+    #: Later clauses of a compound question whose retrieved file the answer does not cite.
+    clauses_unanswered: tuple[str, ...] = ()
 
 
 @dataclass
@@ -737,52 +804,271 @@ class _GradeState:
     named_body_cut: dict | None = None
     gap: list[str] = field(default_factory=list)
     lead_off_top: str | None = None
+    admitted_gap: str | None = None
+    unindexed_names: set[str] = field(default_factory=set)
+    absent_names: tuple[str, ...] = ()
+    split_names: dict[str, list[str]] = field(default_factory=dict)
+    clauses_unanswered: list[str] = field(default_factory=list)
 
 
 def _earned_high(
     question: str,
+    question_ids: set[str],
     answer_text: str,
     hits: list[dict],
     citations: list[str],
     served_named_body: bool,
     top_score: float,
-) -> tuple[bool, bool]:
-    """``(earned_body, earned_grounding)``: the two routes to "high" on a weak retrieval.
+) -> str | None:
+    """Which route earned "high" on a weak retrieval, or None.
 
-    ``earned_body``: the question-named symbol's live body is inlined, resolved
-    by exact name rather than ranking. ``earned_grounding``: every mechanism term
-    the answer names was in the material shown; that shows no fabrication, not
-    that retrieval found the right page, so it is opt-in. Demotion gates still
-    apply to an earned high.
+    * ``"symbol_body"``: the question-named symbol's live body is inlined,
+      resolved by exact name rather than ranking.
+    * ``"value_line"``: the answer states the value a verified definition line
+      assigns, for a constant the question names (:func:`stated_value_line`).
+    * ``"grounding"``: every mechanism term the answer names was in the
+      material shown; that shows no fabrication, not that retrieval found the
+      right page, so it is opt-in.
+
+    Demotion gates still apply to an earned high.
     """
     if not (_flag_on(_EARN_HIGH_GROUNDING_ENV) and top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR):
-        return False, False
-    earned_grounding = False
+        return None
+    if served_named_body:
+        return "symbol_body"
+    if stated_value_line(question, question_ids, answer_text, hits) is not None:
+        return "value_line"
     if _opt_in(_EARN_HIGH_ON_WEAK_RETRIEVAL_ENV):
         cited = set(citations)
         cited_has_body = any(h.get("symbols") for h in hits if h.get("target_path") in cited)
         unsupported, grounded = _frame_term_grounding(answer_text, question, hits)
-        earned_grounding = cited_has_body and grounded >= 1 and not unsupported
-    return served_named_body, earned_grounding
+        if cited_has_body and grounded >= 1 and not unsupported:
+            return "grounding"
+    return None
+
+
+# Words that ask for a value rather than name the constant holding it.
+_VALUE_ASK_STEMS = frozenset(_stem(w) for w in ("default", "value", "constant", "set", "defined"))
+
+# An assignment's "=", never a comparison or a walrus.
+_ASSIGN_RE = re.compile(r"(?<![=!<>:])=(?!=)")
+# A trailing comment after the assigned value.
+_TRAILING_COMMENT_RE = re.compile(r"\s+(?://|#).*$")
+
+
+def stated_value_line(
+    question: str, question_ids: set[str], answer_text: str, hits: list[dict]
+) -> dict | None:
+    """The verified constant the question names and whose value the answer states.
+
+    A constant's definition IS its assignment line, so a value read live at
+    verified bounds grounds the answer as a served body does. The question must
+    name the constant exactly, or by every word of its name with the rest of
+    the question carried by the constant's own page; a name defined twice in
+    the hits names neither.
+    """
+    found, seen = _verified_constants(hits)
+    for hit, sym in found:
+        name = sym.get("name") or ""
+        if seen[name] > 1:
+            continue
+        stated = _states_assigned_value(name, sym.get("signature") or "", answer_text)
+        if stated and _question_names_constant(question, question_ids, sym, hit):
+            return {"path": hit.get("target_path"), "name": name, "line": sym.get("start_line")}
+    return None
+
+
+def _verified_constants(hits: list[dict]) -> tuple[list[tuple[dict, dict]], Counter]:
+    """The top hits' verified constants, and how often each constant name occurs in all hits."""
+    constants = [
+        (rank, h, sym)
+        for rank, h in enumerate(hits)
+        for sym in h.get("symbols") or []
+        if sym.get("kind") in ("constant", "variable")
+    ]
+    seen = Counter(sym.get("name") for _, _, sym in constants)
+    found = [
+        (h, sym) for rank, h, sym in constants if rank < _ENRICH_TOP_N_HITS and sym.get("_verified")
+    ]
+    return found, seen
+
+
+def _states_assigned_value(name: str, signature: str, answer_text: str) -> bool:
+    """Does a sentence naming *name* state the value *signature* assigns?
+
+    Every sentence naming it with numbers must assert exactly the assigned ones,
+    so "RETRIES is 5, not 3" never reads as stating 3.
+    """
+    value = _assigned_value(signature)
+    if value is None:
+        return False
+    numbers = _numbers_in(value)
+    literal = _word_re(value.strip("'\"`"))
+    stated = False
+    for sentence in _sentences(answer_text):
+        if not _word_re(name).search(sentence):
+            continue
+        asserted = _asserted_numbers(sentence)
+        if numbers and asserted and asserted != numbers:
+            return False
+        stated = stated or (asserted == numbers if numbers else bool(literal.search(sentence)))
+    return stated
+
+
+def _assigned_value(signature: str) -> str | None:
+    """The value an assignment-shaped signature gives, or None when it gives none."""
+    m = _ASSIGN_RE.search(signature)
+    if m is None:
+        return None
+    value = _TRAILING_COMMENT_RE.sub("", signature[m.end() :]).strip().rstrip(";,").strip()
+    # One character ("0", "[") or no letter or digit says too little to match on.
+    if len(value.strip("'\"`")) < 2 and not value.isdigit():
+        return None
+    return value if any(ch.isalnum() for ch in value) else None
+
+
+def _word_re(text: str) -> re.Pattern:
+    return re.compile(rf"(?<![\w$]){re.escape(text)}(?![\w$])", re.IGNORECASE)
+
+
+def _question_names_constant(question: str, question_ids: set[str], sym: dict, hit: dict) -> bool:
+    name = sym.get("name") or ""
+    name_words = _text_stems(name)
+    if name not in question_ids:
+        asked = _text_stems(question)
+        if len(name_words) < 2 or not all(_stem_hit(w, asked) for w in name_words):
+            return False
+    # The constant's own lines and its page's heading, not every symbol on the page.
+    own = " ".join(
+        str(v or "")
+        for v in (hit.get("target_path"), hit.get("title"), hit.get("summary"),
+                  sym.get("signature"), sym.get("docstring"))
+    )
+    page = _text_stems(own) | name_words
+    return all(
+        _stem_hit(t, page) for t in _question_words(question) if t not in _VALUE_ASK_STEMS
+    )
 
 
 def _hedge_gate(s: _GradeState) -> None:
     """Dominance says the right file was indexed, not that the prose is usable.
 
     With the question-named body served the ground truth is in hand, so the
-    demotion stops at "medium" rather than sending the agent to Read.
+    demotion stops at "medium" rather than sending the agent to Read. A caveat
+    that is not a hedge falls to :func:`_admitted_gap_gate`.
     """
-    s.hedged = _answer_is_hedged(s.answer_text)
+    # A later admission is a caveat only when retrieval carries every word asked.
+    s.hedged = _answer_is_hedged(s.answer_text, s.question) or (
+        _admitted_gap(s.answer_text) is not None and _unserved_words(s.question, s.hits)
+    )
     if s.hedged:
         s.confidence = "medium" if s.served_named_body else "low"
 
 
+def _admitted_gap_gate(s: _GradeState) -> None:
+    """The answer says part of what was asked is not in its evidence.
+
+    Dominance measured the retrieval, not whether it covered the question;
+    the answer's own admission is the better witness.
+    """
+    if s.confidence != "high" or s.hedged:
+        return
+    s.admitted_gap = _admitted_gap(s.answer_text)
+    if s.admitted_gap:
+        s.confidence = "medium"
+
+
+def _absent_name_gate(s: _GradeState) -> None:
+    """The question names code that does not exist: no symbol, no production line,
+    and nothing retrieved mentions it.
+
+    Whatever the answer says, it describes something else, so it is not one to
+    act on.
+    """
+    if not s.absent_names:
+        return
+    bodies = [
+        f"{b.get('name')} {b.get('source')} {[w.get('name') for w in b.get('withheld_symbols') or []]}"
+        for b in s.symbol_bodies
+    ]
+    served = "\n".join([_retrieval_corpus(s.hits, include_paths=True), *bodies]).lower()
+    s.absent_names = tuple(n for n in s.absent_names if n.lower() not in served)
+    if s.absent_names:
+        s.confidence = "low"
+
+
 def _identifier_gate(s: _GradeState) -> None:
-    """The question names identifiers but no top hit hydrates any of them."""
-    if s.confidence != "high" or not s.question_ids:
+    """The question names symbols but no top hit hydrates any of them.
+
+    A name no symbol carries (``HTTP``, ``TypeScript``) cannot be hydrated, so
+    only indexed names count.
+    """
+    if s.confidence != "high" or not (s.question_ids - s.unindexed_names):
         return
     top_n = [h for h in s.hits[:_ENRICH_TOP_N_HITS] if h.get("symbols")]
     if not any(sym.get("_matched") for h in top_n for sym in (h.get("symbols") or [])):
+        s.confidence = "medium"
+
+
+def _split_name_gate(s: _GradeState) -> None:
+    """A question-named name defined in several files, answered as if it were one.
+
+    Settled when the answer names every defining file in a sentence that names
+    the symbol, or when a question word is a path word of exactly one of them
+    and the answer names that one so. A file the answer mentions for another
+    reason (an importer) does not count.
+    """
+    if s.confidence != "high":
+        s.split_names = {}
+        return
+    s.split_names = {
+        name: paths
+        for name, paths in s.split_names.items()
+        if not _split_settled(name, paths, s.question, s.answer_text)
+    }
+    if s.split_names:
+        s.confidence = "medium"
+
+
+def _split_settled(name: str, paths: list[str], question: str, answer_text: str) -> bool:
+    basenames = Counter(p.rsplit("/", 1)[-1] for p in paths)
+    name_re = _word_re(name)
+    about = [x for x in _sentences(answer_text) if name_re.search(x)]
+
+    def named(path: str) -> bool:
+        base = path.rsplit("/", 1)[-1]
+        return any(path in x or (basenames[base] == 1 and base in x) for x in about)
+
+    if all(named(p) for p in paths):
+        return True
+    asked = _path_words(question) - _path_words(name)
+    picked = [p for p in paths if asked & _path_words(p.rsplit(".", 1)[0])]
+    return len(picked) == 1 and named(picked[0])
+
+
+def _path_words(text: str) -> set[str]:
+    """Lower-case words of a path or sentence, stopwords dropped. Two letters
+    count: ``go`` or ``ui`` is often the directory that tells definitions apart."""
+    words = re.split(r"[^a-z0-9]+", split_humps(text).lower())
+    return {w for w in words if len(w) >= 2 and w not in STOPWORDS}
+
+
+def _clause_gate(s: _GradeState) -> None:
+    """A compound question whose later clause the answer leaves out.
+
+    Each later clause put its best file among the hits (``_clause``); an answer
+    citing none of that clause's file used none of its evidence, so the whole
+    question is not answered.
+    """
+    if s.confidence != "high":
+        return
+    cited = {c.split("::", 1)[0] for c in s.citations}
+    s.clauses_unanswered = [
+        h["_clause"]
+        for h in s.hits
+        if h.get("_clause") and (h.get("target_path") or "").split("::", 1)[0] not in cited
+    ]
+    if s.clauses_unanswered:
         s.confidence = "medium"
 
 
@@ -903,7 +1189,11 @@ def _non_dominant_ceiling(s: _GradeState) -> None:
 #: late so a more specific gate writes the note.
 _GRADE_GATES = (
     _hedge_gate,
+    _absent_name_gate,
+    _admitted_gap_gate,
     _identifier_gate,
+    _split_name_gate,
+    _clause_gate,
     _value_gate,
     _citation_gate,
     _named_file_gate,
@@ -928,6 +1218,9 @@ def _grade_answer(
     dominance: str | None,
     uncovered: list[str] | None = None,
     lead_off_top: str | None = None,
+    unindexed_names: Collection[str] = (),
+    absent_names: Collection[str] = (),
+    split_names: dict[str, list[str]] | None = None,
 ) -> _Grade:
     """Grade the synthesised answer through the gate cascade, in order.
 
@@ -938,19 +1231,26 @@ def _grade_answer(
     ``dominance`` is :func:`dominance_reason`'s verdict, computed once by the
     caller and used for the starting grade, the ceiling, and the note's reason.
     ``uncovered`` is :func:`uncovered_terms`, when the caller already has it.
-    ``lead_off_top`` is ``AnswerFiles.drops_top_hit``.
+    ``lead_off_top`` is ``AnswerFiles.drops_top_hit``. ``unindexed_names`` are
+    question identifiers no symbol carries; ``absent_names`` the code-shaped
+    ones no production line writes either (``unindexed_question_names``).
+    ``split_names`` maps a question name to the files that define it, for names
+    defined in more than one.
     """
     dominant = dominance is not None
     top_score = _confidence_score(hits[0]) if hits else 0.0
-    earned_body, earned_grounding = _earned_high(
-        question, answer_text, hits, citations, served_named_body, top_score
+    earned = _earned_high(
+        question, question_ids, answer_text, hits, citations, served_named_body, top_score
     )
-    earn_high = earned_body or earned_grounding
+    earn_high = earned is not None
     # Dominant but under the score floor is "medium": the right file relative to
     # its siblings, not strong enough to trust unverified.
     strong = top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR
     start = "high" if (dominant or earn_high) and strong else "medium"
     s = _GradeState(
+        unindexed_names=set(unindexed_names),
+        absent_names=tuple(absent_names),
+        split_names=dict(split_names or {}),
         question=question,
         question_ids=question_ids,
         answer_text=answer_text,
@@ -970,8 +1270,11 @@ def _grade_answer(
     # 1.0 ratio, so quoting the ratio would print a near tie as justification.
     high_reason = None
     if s.confidence == "high":
-        high_reason = dominance or ("symbol_body" if earned_body else "grounding")
+        high_reason = dominance or earned
     return _Grade(
+        absent_names=s.absent_names,
+        split_names=s.split_names,
+        clauses_unanswered=tuple(s.clauses_unanswered),
         confidence=s.confidence,
         high_reason=high_reason,
         second_score=_confidence_score(hits[1]) if len(hits) >= 2 else 0.0,
@@ -986,4 +1289,5 @@ def _grade_answer(
         lookup_body_truncated=s.lookup_body_truncated,
         named_body_cut=s.named_body_cut,
         lead_off_top=s.lead_off_top,
+        admitted_gap=s.admitted_gap,
     )

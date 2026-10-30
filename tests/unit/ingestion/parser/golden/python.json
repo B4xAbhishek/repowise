@@ -9,7 +9,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -157,6 +158,7 @@
       "test_split_runs",
       "do_work"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -234,7 +236,8 @@
     ],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "python/classes.py": {
     "file_info": {
@@ -246,7 +249,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -531,6 +535,7 @@
       "Cohesive",
       "Splintered"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -558,7 +563,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "python/complex.py": {
     "file_info": {
@@ -570,7 +576,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -601,6 +608,7 @@
     "exports": [
       "many_branches"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -611,7 +619,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "python/conditionals.py": {
     "file_info": {
@@ -623,7 +632,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -702,6 +712,7 @@
       "six_ops",
       "two_ops"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -712,7 +723,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "python/match.py": {
     "file_info": {
@@ -724,7 +736,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -779,6 +792,7 @@
       "python_match",
       "python_if_elif"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -789,7 +803,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "python/nested.py": {
     "file_info": {
@@ -801,7 +816,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -856,6 +872,7 @@
       "deeply_nested",
       "shallow"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -866,7 +883,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "python/perf_io_in_loop.py": {
     "file_info": {
@@ -878,7 +896,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -1198,6 +1217,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1223,6 +1243,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1248,6 +1269,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1273,6 +1295,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1298,6 +1321,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1323,6 +1347,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1348,6 +1373,7 @@
       "sink_outside_loop",
       "open_in_loop"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1643,7 +1669,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "python/py_overload_init.py": {
     "file_info": {
@@ -1655,7 +1682,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -1893,6 +1921,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1918,6 +1947,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1943,6 +1973,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1959,6 +1990,7 @@
       "parse",
       "parse"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -2002,6 +2034,7 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

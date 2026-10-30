@@ -153,6 +153,27 @@ def runtime_grammar_cache(tag: str) -> tuple[bool, str]:
     return name in pack.downloaded_languages(), str(pack.cache_dir())
 
 
+def fetch_runtime_grammars(cache_dir: str) -> list[tuple[str, bool, str]]:
+    """Download every runtime grammar into *cache_dir*: ``(tag, cached, error)`` for each."""
+    import tree_sitter_language_pack as pack
+
+    # Not $REPOWISE_GRAMMAR_DIR: this stages a cache for another machine.
+    pack.configure(pack.PackConfig(cache_dir=cache_dir))
+    results: list[tuple[str, bool, str]] = []
+    for spec in _LANG_REGISTRY.all_specs():
+        if spec.grammar_package != _RUNTIME_DOWNLOAD_PACKAGE:
+            continue
+        name = spec.grammar_loader_args[0] if spec.grammar_loader_args else spec.tag
+        try:
+            getattr(pack, spec.grammar_loader)(name)
+        except Exception as exc:
+            # A cached file that will not load is still a failed fetch.
+            results.append((spec.tag, False, str(exc) or type(exc).__name__))
+            continue
+        results.append((spec.tag, name in pack.downloaded_languages(), ""))
+    return results
+
+
 # Loaded grammars, filled one language at a time by ``_get_language``.
 _LANGUAGE_REGISTRY: dict[str, Language] = {}
 # Failed tags and why; a failure is not retried per file.
@@ -325,6 +346,58 @@ _KOTLIN_DECLARATION_HEAD = re.compile(
     rb"(?:(?:" + _KOTLIN_MODIFIER_WORDS.encode() + rb")\s+)*"
     rb"(?:fun|class|interface|object|val|var)\b"
 )
+
+
+# Spans that send tree-sitter-kotlin into an ERROR swallowing the rest of the
+# class body, each rewritten in place (same length, newlines kept):
+# - a primary constructor on its own line under ``class X`` led by more than
+#   one modifier or by ``actual`` (``internal actual constructor(``): blanked;
+# - an annotated accessor of a property with no declared type (``val size``
+#   then ``@JvmName("size") get() = ...``): the annotation blanked;
+# - a statement ``get(x)`` right under a ``val``, read as its getter though a
+#   getter takes no parameter: the last indent byte becomes ``;``.
+_KOTLIN_MISPARSED_SPANS = re.compile(
+    rb"(?m)^[ \t]*(?P<ctor>(?:(?:@[\w.]+|public|private|internal|protected|expect|actual)[ \t]+)+)"
+    rb"constructor[ \t]*\("
+    rb"|(?<![\w.])(?P<accessor>@[\w.]+(?:\([^()\n]*\))?)(?=\s*(?:get|set)[ \t]*\()"
+    rb"|(?m:^[ \t]*va[lr][ \t][^\n]*\n[ \t]*)(?P<stmt>[ \t])(?=get[ \t]*\([ \t]*[^)\s])"
+)
+
+
+def _recover_kotlin_misparsed_spans(
+    language: Language, root: Node, source: bytes
+) -> tuple[Node, bytes]:
+    """Re-parse with those spans rewritten, when that clears errors."""
+    if not root.has_error:
+        return root, source
+    # Only a span on a line an ERROR covers is rewritten: one that parsed keeps
+    # its text. Lines, since the ERROR may open just past the span that caused it.
+    errors = _error_rows(root)
+    rewritten = bytearray(source)
+    for m in _KOTLIN_MISPARSED_SPANS.finditer(source):
+        start, end = m.span(m.lastgroup)
+        row = source.count(b"\n", 0, start)
+        if any(lo <= row <= hi for lo, hi in errors):
+            rewritten[start:end] = b";" if m.lastgroup == "stmt" else b" " * (end - start)
+    if rewritten == source:
+        return root, source
+    new_root = Parser(language).parse(bytes(rewritten)).root_node
+    if len(_collect_error_nodes(new_root)) >= len(_collect_error_nodes(root)):
+        return root, source
+    return new_root, bytes(rewritten)
+
+
+def _error_rows(root: Node) -> list[tuple[int, int]]:
+    """First and last rows of the outermost ERROR nodes under *root*."""
+    ranges: list[tuple[int, int]] = []
+    pending = [root]
+    while pending:
+        node = pending.pop()
+        if node.type == "ERROR":
+            ranges.append((node.start_point[0], node.end_point[0]))
+        elif node.has_error:
+            pending.extend(node.children)
+    return ranges
 
 
 def _kotlin_leading_annotations(top: Node) -> tuple[list[Node], Node | None]:

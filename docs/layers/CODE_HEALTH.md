@@ -77,7 +77,7 @@ not analysed, never scored as a 10.
 
 | Control | Values | Effect |
 |---|---|---|
-| `scope` | `all` (default), `production` | `production` drops test files, which lowers the headline because tests usually score higher |
+| `scope` | `all` (default), `production` | `production` drops test, tooling, vendored and generated files, which lowers the headline because tests usually score higher |
 | `counts` | `everything` (default), `code_shape` | `code_shape` removes the git-history half of each deduction, to see whether code improved after a refactor raised churn |
 
 Every response echoes both. `everything` is the calibrated number every accuracy claim
@@ -141,13 +141,13 @@ survives re-indexing, and a re-detected `resolved` finding reopens.
 
 ### Detector families
 
-The 58 detectors fall into families whose caps keep any one from dominating a file.
+The 59 detectors fall into families whose caps keep any one from dominating a file.
 Every id with its threshold and weight:
 [the full roster](../architecture/code-health.md#the-full-roster).
 
 | Family | Detectors | Cap | Catches |
 |---|---:|---|---|
-| Structural complexity | 6 | 2.5 | Deep nesting, brain methods (listed, not scored), god classes, low cohesion, repeated nesting, complex conditions |
+| Structural complexity | 6 | 2.5 | Deep nesting, god classes, low cohesion, complex conditions; brain methods and repeated nesting are listed, not scored |
 | Size and complexity | 3 | 1.5 | Long or high-CCN functions, primitive obsession |
 | Duplication | 1 | 1.0 | Cloned blocks |
 | Error handling | 1 | 0.5 | Swallowed or catch-all handlers, `unwrap`/panic, discarded Go errors |
@@ -156,6 +156,7 @@ Every id with its threshold and weight:
 | Test quality | 4 | 0.5 | Oversized or duplicated assertion blocks; two advisory markers |
 | SQL | 4 | none | Complex SQL, `SELECT *`, `UPDATE`/`DELETE` with no `WHERE`, cartesian joins |
 | Apex | 4 | none | SOQL injection, a class with queries and no sharing keyword, hardcoded record Ids, `SeeAllData=true` tests; all advisory |
+| COBOL | 1 | none | `ALTER`, `GO TO ... DEPENDING ON`, and `GO TO` out of a paragraph's `PERFORM THRU` range; advisory |
 | Performance | 21 | none | See [PERFORMANCE.md](PERFORMANCE.md) |
 
 - Caps are code-health caps; SQL deducts only in maintainability (2.0) and performance

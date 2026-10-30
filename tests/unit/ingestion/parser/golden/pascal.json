@@ -9,7 +9,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -40,6 +41,7 @@
     "exports": [
       "ManyBranches"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -50,7 +52,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "pascal/nested.pas": {
     "file_info": {
@@ -62,7 +65,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -117,6 +121,7 @@
       "DeeplyNested",
       "Shallow"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -144,6 +149,7 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

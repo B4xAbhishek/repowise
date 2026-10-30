@@ -24,7 +24,7 @@ from repowise.server.mcp_server._helpers import (
 )
 
 from . import cache as _cache
-from .branches import _branch_overlap_block, _independent_changes_block
+from .branches import _branch_overlap_block, _independent_changes_block, _start_overlap_scan
 from .changed import _changed_in_scope, _push_change
 from .cross_repo import _cross_repo_block
 from .health import (
@@ -143,14 +143,12 @@ async def _attach_branch_blocks(
     changed: Any,
     collector: OmissionCollector,
     revspec: str | None,
-    finding_id: str | None,
+    scan: asyncio.Task | None,
 ) -> Any:
     """Attach ``branch_overlap`` and return the independent-changes block, or None."""
-    # A drill-down returns one finding and nothing else, so neither block
-    # would reach the caller; both are pure cost on that path.
-    if finding_id is not None:
-        return None
-    overlap = await _branch_overlap_block(ctx, changed, collector, revspec_head(revspec))
+    overlap = await _branch_overlap_block(
+        ctx, changed, collector, revspec_head(revspec), scan=scan
+    )
     if overlap is not None:
         payload["branch_overlap"] = overlap
     return await _independent_changes_block(ctx, changed, collector, revspec)
@@ -258,9 +256,11 @@ async def get_change_risk(
             includes,
         )
     )
+    # A drill-down returns one finding and nothing else, so the tests,
+    # coverage, fix, cross-repo and branch blocks would never reach the caller.
+    scan = _start_overlap_scan(ctx, changed, revspec_head(revspec)) if finding_id is None else None
+    independent = None
     try:
-        # A drill-down returns one finding and nothing else, so the tests,
-        # coverage, fix and cross-repo blocks would never reach the caller.
         if finding_id is None:
             await _pkg._attach_change_blocks(
                 ctx,
@@ -273,12 +273,14 @@ async def get_change_risk(
                 includes,
                 tests_detail="tests" in include_set,
             )
-        independent = await _attach_branch_blocks(
-            ctx, payload, changed, collector, revspec, finding_id
-        )
+            independent = await _attach_branch_blocks(
+                ctx, payload, changed, collector, revspec, scan
+            )
     except BaseException:
-        # Never leave the comparison running for a request that is already over.
+        # Never leave the comparison or the scan running for a request that is already over.
         delta_task.cancel()
+        if scan is not None:
+            scan.cancel()
         raise
     delta = await delta_task
     await _attach_health_references(ctx, delta)

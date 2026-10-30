@@ -22,7 +22,8 @@ export type BiomarkerCategory =
   | "performance"
   | "organizational"
   | "sql"
-  | "apex";
+  | "apex"
+  | "cobol";
 
 export interface BiomarkerInfo {
   label: string;
@@ -42,6 +43,7 @@ export const CATEGORY_LABEL: Record<BiomarkerCategory, string> = {
   organizational: "Organizational",
   sql: "SQL",
   apex: "Apex",
+  cobol: "COBOL",
 };
 
 export const CATEGORY_CAP: Record<BiomarkerCategory, number> = {
@@ -63,6 +65,8 @@ export const CATEGORY_CAP: Record<BiomarkerCategory, number> = {
   sql: 2.0,
   // Apex markers are advisory: listed, never deducted.
   apex: 0,
+  // The COBOL marker is advisory too.
+  cobol: 0,
 };
 
 export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
@@ -82,7 +86,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: BIOMARKER_LABELS.repeated_nesting,
     category: "structural_complexity",
     description:
-      "A function with several separate nested blocks stitched together. No single block is bad, but the whole reads as a sequence of mini-functions.",
+      "A function with several separate nested blocks stitched together. No single block is bad, but the whole reads as a sequence of mini-functions. Advisory: it costs this file no points.",
   },
   complex_method: {
     label: BIOMARKER_LABELS.complex_method,
@@ -250,7 +254,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: BIOMARKER_LABELS.stale_governance,
     category: "organizational",
     description:
-      "The architectural decision governing this file has gone stale — the code has moved on since the decision was last confirmed.",
+      "Files governed by this file's architectural decision have changed since the decision was recorded. The decision may still hold, but it is worth a review.",
   },
   contradictory_decision: {
     label: BIOMARKER_LABELS.contradictory_decision,
@@ -334,7 +338,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: BIOMARKER_LABELS.hot_path_sync_io,
     category: "performance",
     description:
-      "A blocking subprocess or filesystem call in one of the repo's most-called functions, even outside a loop. Every call through the function waits for it. Advisory: a latency signal ranked by call-graph centrality, not proof of a request path, and not always a defect. Tests, tooling, examples, and generated or vendored code are not flagged.",
+      "A blocking subprocess or filesystem call in a function with at least as many callers as 80% of the repo's called functions, even outside a loop. Every call through the function waits for it. Advisory: a latency signal ranked by call-graph centrality, not proof of a request path, and not always a defect. Tests, tooling, examples, and generated or vendored code are not flagged.",
   },
   blocking_io_under_lock: {
     label: BIOMARKER_LABELS.blocking_io_under_lock,
@@ -432,6 +436,12 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     description:
       "A test class or method annotated @IsTest(SeeAllData=true): it reads the org's live data, so it can pass in one org and fail in another. Advisory: it never deducts.",
   },
+  cobol_unstructured_flow: {
+    label: BIOMARKER_LABELS.cobol_unstructured_flow,
+    category: "cobol",
+    description:
+      "A COBOL paragraph or section with an ALTER, a GO TO ... DEPENDING ON, or a GO TO to anything other than an exit paragraph of the PERFORM THRU range it sits in, so where control goes next has to be traced by hand. GO TO X-EXIT inside its own range is not flagged. Advisory: it never deducts.",
+  },
 };
 
 export function biomarkerInfo(name: string): BiomarkerInfo {
@@ -471,11 +481,13 @@ export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "mock_saturated_test",
   "hidden_coupling",
   "brain_method",
+  "repeated_nesting",
   "untested_complexity",
   "apex_soql_injection",
   "apex_missing_sharing",
   "apex_hardcoded_id",
   "apex_see_all_data",
+  "cobol_unstructured_flow",
 ]);
 
 /**

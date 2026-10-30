@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.decisions.lifecycle import is_governing
+from repowise.core.analysis.decisions.lifecycle import RETIRED_STATUSES, is_governing
 from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.attribution import attribution_enabled, file_share
 from repowise.core.generation.page_selection import is_stale_status
@@ -28,6 +28,7 @@ from repowise.core.persistence.crud import (
     get_kg_layers,
     get_kg_tour_steps,
 )
+from repowise.core.persistence.crud.tombstoned_pages import announces_deletion
 from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import (
     DecisionRecord,
@@ -175,7 +176,7 @@ def _tombstone_section(card: CardState) -> bool:
     """The file was deleted or renamed since indexing: write the redirect
     rather than a misleading card, and say the card ends here."""
     page = card.page
-    if page is None or getattr(page, "freshness_status", "") != "tombstone":
+    if page is None or not announces_deletion(page):
         return False
     try:
         successors = json.loads(page.metadata_json or "{}").get("successor_paths") or []
@@ -206,7 +207,6 @@ async def _parent_page_section(card: CardState) -> None:
         card.data["parent_page"] = {
             "title": parent.title,
             "target_path": parent.target_path,
-            "section": parent.section_number,
         }
 
 
@@ -450,7 +450,7 @@ async def _decisions_section(card: CardState) -> None:
     ``candidates`` never accepted, ``history`` accepted then withdrawn.
     Ordering is ``decision_priority_order``, shared with the Decisions page.
 
-    The dismissed filter is ``count_decisions_by_lane``'s: "dismissed" marks
+    The retired filter is ``count_decisions_by_lane``'s: a retired status marks
     both a tombstoned candidate and a withdrawn decision, and only the
     acceptance row tells them apart, so a bare status filter would lose the
     withdrawn ones from the history lane.
@@ -461,7 +461,7 @@ async def _decisions_section(card: CardState) -> None:
         select(DecisionRecord)
         .where(
             DecisionRecord.repository_id == card.repo_id,
-            or_(DecisionRecord.status != "dismissed", accepted_predicate()),
+            or_(DecisionRecord.status.notin_(sorted(RETIRED_STATUSES)), accepted_predicate()),
         )
         .order_by(*decision_priority_order())
     )
@@ -562,7 +562,9 @@ async def _freshness_section(card: CardState) -> None:
         served_root(card.query.repository, card.query.repo_root), [file_path]
     ):
         freshness["working_tree"] = "modified"
-    card.data["freshness"] = freshness
+    # A current page is the default, so only drift is sent.
+    if freshness.get("is_stale") or "working_tree" in freshness:
+        card.data["freshness"] = freshness
 
 
 async def _kg_section(card: CardState) -> None:
@@ -646,7 +648,7 @@ async def _references_section(card: CardState) -> None:
     root = served_root(card.query.repository, card.query.repo_root)
     if ref_node is not None and root:
         card.data["references"] = await reference_edit_set(
-            card.session, card.repo_id, root, ref_node, card.query.collector
+            card.session, card.repo_id, root, ref_node, card.query.collector, wider=True
         )
     else:
         card.data["references_note"] = "references require a symbol target in the graph"

@@ -9,7 +9,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -64,6 +65,7 @@
       "testManyAsserts",
       "testFewAsserts"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -74,7 +76,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "dart/classes.dart": {
     "file_info": {
@@ -86,7 +89,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -325,6 +329,7 @@
       "Cohesive",
       "Wide"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -335,7 +340,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "dart/nested.dart": {
     "file_info": {
@@ -347,7 +353,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -426,6 +433,7 @@
       "shallow",
       "manyBranches"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -436,7 +444,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "dart/perf_io_in_loop.dart": {
     "file_info": {
@@ -448,7 +457,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [
       {
@@ -621,6 +631,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -639,6 +650,7 @@
       "makeClients",
       "constantBound"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -746,6 +758,7 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }
